@@ -37,5 +37,21 @@ yarn-error.*
 *.tsbuildinfo
 
 # generated native folders
+#
+# Kept out of the repo, but note that the local android/ is hand-edited on top
+# of what prebuild generated — the release signingConfigs block and the
+# manifest permissions. Regenerating it means reapplying those; the README
+# says which.
 /ios
 /android
+
+# Release signing material — never commit
+credentials/
+
+# Agent working files, not part of the project
+.claude/
+docs/
+
+# Exports written by the app during development
+worldtrace-*.gpx
+worldtrace-*.db
