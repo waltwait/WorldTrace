@@ -61,7 +61,7 @@ tested.
 ## Commands
 
 ```bash
-npm test                 # 329 tests, ~1s
+npm test                 # 345 tests, ~1s
 npm run typecheck
 cd android && JAVA_HOME=$HOME/.jdks/jdk-17.0.20+8/Contents/Home \
   ANDROID_HOME=/opt/homebrew/share/android-commandlinetools ./gradlew assembleRelease
@@ -70,11 +70,13 @@ cd android && JAVA_HOME=$HOME/.jdks/jdk-17.0.20+8/Contents/Home \
 - **JDK 17 exactly.** Android Studio bundles JDK 25; AGP supports ≤21, and JDK
   24+ restricts `System.load`, which breaks the CMake step.
 - **`expo prebuild` will destroy the release signing config.** `android/` is
-  checked in and hand-edited. If you must prebuild, restore the `signingConfigs`
-  block in `android/app/build.gradle` and the permissions in
-  `AndroidManifest.xml` afterwards. Editing `app.json` permissions alone changes
-  nothing until a prebuild — edit the manifest directly and mirror it into
-  `app.json`.
+  gitignored and hand-edited on top of what prebuild generated, so the working
+  copy on this machine is the only one — treat it as unbacked-up. If you must
+  prebuild, restore the `signingConfigs` block in `android/app/build.gradle`
+  afterwards; the README records it verbatim. Permissions survive, since
+  `app.json` is their source of truth — but editing `app.json` alone changes
+  nothing until the next prebuild, so edit the manifest directly when testing
+  and mirror it back.
 - **`Operation not permitted` from AAPT or hermesc is an agent-sandbox problem,
   not a project problem**, and it does not happen in a normal terminal. The
   shape of it: the first build after a source change fails writing an
@@ -175,4 +177,6 @@ quietly wrong.
 - The timeline has no "newly opened area" per day — bitmaps carry no per-day
   provenance.
 - No permission-denied guidance screen, no disk-space check.
-- **This directory is not a git repository.** There is no undo.
+- Published at https://github.com/waltwait/WorldTrace. `android/`, `docs/`,
+  `credentials/` and `.env.local` are deliberately not in it, so a clone is not
+  a complete backup of this machine.
