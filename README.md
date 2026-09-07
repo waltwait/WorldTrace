@@ -174,6 +174,18 @@ cd android && JAVA_HOME=$HOME/.jdks/jdk-17.0.20+8/Contents/Home \
 
   改 `app.json` 的 permissions 在下一次 prebuild 之前不會有任何效果。急著測的話直接改
   manifest，但一定要同步回 `app.json`，否則下次 prebuild 就沒了。
+- **每次公開發布都要把 `versionCode` 往上加。** Android 只允許升級到更大的
+  `versionCode`；相同或更小的話，裝了舊版的人唯一的路是移除重裝，而那會帶走資料庫和每
+  一公尺擦開的迷霧。這個號碼要改**兩個地方**，理由跟上面 permissions 那條一樣：
+
+  - `android/app/build.gradle` 的 `versionCode` —— 這是現在真的在建置的那份，改了立刻生效。
+  - `app.json` 的 `expo.android.versionCode` —— 這是 prebuild 重新產生 `build.gradle`
+    時的來源。少了它，下一次 prebuild 會把號碼默默打回 1。
+
+  `versionName` 是給人看的（`app.json` 的 `expo.version` 是它的來源），`versionCode` 是
+  給系統看的，只需要單調遞增，兩者不必對齊。`tools/release.sh --publish` 在真的發布前會
+  把當下的 `versionCode` 印出來要你確認，但它只能問，不能替你決定。
+
 - **那個 `throw` 是刻意的 —— 沒有簽章材料就讓 build 直接失敗**，不退回 debug 簽章。裝過
   debug 簽章的版本之後就只能移除重裝，而移除會帶走資料庫和每一公尺擦開的迷霧。
   `credentials/` 不在版控裡，也刻意放在 `android/` 外面，讓 prebuild 刪不到它。
