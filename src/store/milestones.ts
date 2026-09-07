@@ -13,6 +13,7 @@
 
 import { distanceMeters } from '../geo/distance';
 import type { SqlDriver } from './driver';
+import { getPointsSignature, type PointsSignature } from './stats';
 
 export interface Milestones {
   /** Longest run of consecutive days with any track at all. */
@@ -34,8 +35,6 @@ interface PointRow {
   ts: number;
   lat: number;
   lon: number;
-  day: string;
-  hour: number;
 }
 
 const EMPTY: Milestones = {
@@ -50,18 +49,39 @@ const EMPTY: Milestones = {
 const NIGHT_ENDS_AT_HOUR = 5;
 const DAWN_ENDS_AT_HOUR = 7;
 
-export async function buildMilestones(driver: SqlDriver): Promise<Milestones> {
-  // The local day and hour are resolved by SQLite rather than by JS Date, so
-  // they agree with the day grouping the timeline and the summary already use.
+function toLocalDayAndHour(ts: number): { day: string; hour: number } {
+  const d = new Date(ts);
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return {
+    day: `${year}-${month}-${day}`,
+    hour: d.getHours(),
+  };
+}
+
+const milestonesCache = new WeakMap<SqlDriver, { sig: PointsSignature; milestones: Milestones }>();
+
+export async function buildMilestones(
+  driver: SqlDriver,
+  knownSig?: PointsSignature,
+): Promise<Milestones> {
+  const sig = knownSig ?? (await getPointsSignature(driver));
+  const cached = milestonesCache.get(driver);
+  if (cached && cached.sig.count === sig.count && cached.sig.lastTs === sig.lastTs) {
+    return cached.milestones;
+  }
+
   const points = await driver.all<PointRow>(
-    `SELECT segment_id, ts, lat, lon,
-            date(ts / 1000, 'unixepoch', 'localtime')            AS day,
-            CAST(strftime('%H', ts / 1000, 'unixepoch', 'localtime') AS INTEGER) AS hour
+    `SELECT segment_id, ts, lat, lon
        FROM points
       ORDER BY ts`,
   );
 
-  if (points.length === 0) return { ...EMPTY };
+  if (points.length === 0) {
+    milestonesCache.set(driver, { sig, milestones: { ...EMPTY } });
+    return { ...EMPTY };
+  }
 
   const start = points[0];
   const perDay = new Map<string, number>();
@@ -71,40 +91,44 @@ export async function buildMilestones(driver: SqlDriver): Promise<Milestones> {
 
   let farthestFromStartMeters = 0;
 
-  // Legs are measured against the previous point in the same segment. Ordering
-  // by ts alone would interleave two segments that overlap in time, so the
-  // previous point is tracked per segment rather than globally.
-  const lastInSegment = new Map<number, PointRow>();
+  const allDays = new Set<string>();
+  const lastInSegment = new Map<number, { point: PointRow; day: string }>();
 
   for (const point of points) {
-    if (point.hour < NIGHT_ENDS_AT_HOUR) nights.add(point.day);
-    else if (point.hour < DAWN_ENDS_AT_HOUR) dawns.add(point.day);
+    const { day, hour } = toLocalDayAndHour(point.ts);
+    allDays.add(day);
+
+    if (hour < NIGHT_ENDS_AT_HOUR) nights.add(day);
+    else if (hour < DAWN_ENDS_AT_HOUR) dawns.add(day);
 
     farthestFromStartMeters = Math.max(farthestFromStartMeters, distanceMeters(start, point));
 
     const previous = lastInSegment.get(point.segment_id);
-    lastInSegment.set(point.segment_id, point);
+    lastInSegment.set(point.segment_id, { point, day });
     if (previous === undefined) continue;
 
-    const leg = distanceMeters(previous, point);
+    const leg = distanceMeters(previous.point, point);
     perSegment.set(point.segment_id, (perSegment.get(point.segment_id) ?? 0) + leg);
 
     // A leg that crosses midnight belongs to neither day: it is a phone that
     // was asleep, not a walk, and charging it to either day would invent a
     // record nobody set.
-    if (previous.day === point.day) {
-      perDay.set(point.day, (perDay.get(point.day) ?? 0) + leg);
+    if (previous.day === day) {
+      perDay.set(day, (perDay.get(day) ?? 0) + leg);
     }
   }
 
-  return {
-    longestStreakDays: longestStreak([...new Set(points.map((point) => point.day))]),
+  const result: Milestones = {
+    longestStreakDays: longestStreak([...allDays]),
     maxDayDistanceMeters: largest(perDay.values()),
     longestOutingMeters: largest(perSegment.values()),
     farthestFromStartMeters,
     nightDayCount: nights.size,
     dawnDayCount: dawns.size,
   };
+
+  milestonesCache.set(driver, { sig, milestones: result });
+  return result;
 }
 
 function largest(values: Iterable<number>): number {

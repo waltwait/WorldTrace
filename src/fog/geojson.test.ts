@@ -38,12 +38,38 @@ describe('exploredRings', () => {
     expect(exploredRings(TILE.x, TILE.y, tile)).toHaveLength(2);
   });
 
-  test('emits one ring per row, since rows are not merged vertically', () => {
+  test('merges matching vertical runs across adjacent rows into a single ring', () => {
     const tile = createTile();
     setBit(tile, 10, 20);
     setBit(tile, 10, 21);
 
-    expect(exploredRings(TILE.x, TILE.y, tile)).toHaveLength(2);
+    expect(exploredRings(TILE.x, TILE.y, tile)).toHaveLength(1);
+  });
+
+  test('merges L-shaped connected path into a single unified ring', () => {
+    const tile = createTile();
+    setBit(tile, 10, 20);
+    setBit(tile, 10, 21);
+    setBit(tile, 11, 21);
+
+    expect(exploredRings(TILE.x, TILE.y, tile)).toHaveLength(1);
+  });
+
+  test('merges circular brush stamp into a single unified ring', () => {
+    const tile = createTile();
+    const cx = 50;
+    const cy = 50;
+    const radius = 4;
+    for (let dy = -radius; dy <= radius; dy++) {
+      for (let dx = -radius; dx <= radius; dx++) {
+        if (dx * dx + dy * dy <= radius * radius) {
+          setBit(tile, cx + dx, cy + dy);
+        }
+      }
+    }
+
+    const rings = exploredRings(TILE.x, TILE.y, tile);
+    expect(rings).toHaveLength(1);
   });
 
   test('places the ring at the cell it came from', () => {
@@ -176,4 +202,29 @@ describe('fogFeature', () => {
 
     expect(feature.geometry.coordinates).toHaveLength(4);
   });
+
+  test('dramatically reduces hole count on realistic winding paths', () => {
+    const tile = createTile();
+    // Simulate a continuous winding path of 100 circular stamps of radius 4 (diameter 9)
+    for (let step = 0; step < 100; step++) {
+      const cx = Math.floor(64 + 40 * Math.sin(step / 10));
+      const cy = Math.floor(64 + 40 * Math.cos(step / 15));
+      for (let dy = -4; dy <= 4; dy++) {
+        for (let dx = -4; dx <= 4; dx++) {
+          if (dx * dx + dy * dy <= 16) {
+            setBit(tile, cx + dx, cy + dy);
+          }
+        }
+      }
+    }
+
+    const t0 = performance.now();
+    const rings = exploredRings(TILE.x, TILE.y, tile);
+    const duration = performance.now() - t0;
+
+    console.log(`[CONTOUR STATS] Continuous winding path produced ${rings.length} rings in ${duration.toFixed(2)}ms!`);
+    // A single continuous winding path merges into just 1 or 2 connected boundary rings!
+    expect(rings.length).toBeLessThanOrEqual(3);
+  });
 });
+

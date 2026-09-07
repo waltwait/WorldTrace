@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { memo, useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import {
   backUpNow,
@@ -18,7 +18,7 @@ import { radius, theme } from './theme';
 
 type Busy = 'gpx' | 'snapshot' | 'connect' | 'upload' | 'restore' | 'status' | 'rebuild' | null;
 
-export function BackupScreen() {
+export const BackupScreen = memo(function BackupScreen() {
   const [busy, setBusy] = useState<Busy>(null);
   const [lastResult, setLastResult] = useState<string | null>(null);
   const [cloud, setCloud] = useState<CloudStatus | null>(null);
@@ -133,7 +133,10 @@ export function BackupScreen() {
       {/* Folded away by default. The cloud backup is the answer for almost
           everyone almost always; these are the escape hatch for the day
           Google is the thing that broke. */}
-      <Pressable style={styles.disclosure} onPress={() => setExportsOpen((open) => !open)}>
+      <Pressable
+        style={({ pressed }) => [styles.disclosure, pressed && { opacity: 0.7 }]}
+        onPress={() => setExportsOpen((open) => !open)}
+      >
         <Text style={styles.disclosureText}>其他匯出</Text>
         <Text style={styles.disclosureChevron}>{exportsOpen ? '⌃' : '⌄'}</Text>
       </Pressable>
@@ -197,7 +200,7 @@ export function BackupScreen() {
       </View>
     </ScrollView>
   );
-}
+});
 
 function CloudPanel({
   status,
@@ -273,7 +276,12 @@ function CloudPanel({
         />
       </View>
 
-      <Pressable onPress={onDisconnect} disabled={busy !== null} hitSlop={8}>
+      <Pressable
+        onPress={onDisconnect}
+        disabled={busy !== null}
+        hitSlop={8}
+        style={({ pressed }) => [pressed && { opacity: 0.6 }]}
+      >
         <Text style={styles.unlink}>中斷連結</Text>
       </Pressable>
     </View>
@@ -293,7 +301,11 @@ function Primary({
 }) {
   return (
     <Pressable
-      style={[styles.primary, disabled && styles.faded]}
+      style={({ pressed }) => [
+        styles.primary,
+        disabled && styles.faded,
+        pressed && !disabled && { opacity: 0.8 },
+      ]}
       onPress={onPress}
       disabled={disabled}
     >
@@ -315,7 +327,11 @@ function Secondary({
 }) {
   return (
     <Pressable
-      style={[styles.secondary, disabled && styles.faded]}
+      style={({ pressed }) => [
+        styles.secondary,
+        disabled && styles.faded,
+        pressed && !disabled && { opacity: 0.8 },
+      ]}
       onPress={onPress}
       disabled={disabled}
     >
@@ -339,7 +355,11 @@ function Action({
 }) {
   return (
     <Pressable
-      style={[styles.action, disabled && !busy && styles.faded]}
+      style={({ pressed }) => [
+        styles.action,
+        disabled && !busy && styles.faded,
+        pressed && !disabled && { opacity: 0.7 },
+      ]}
       onPress={onPress}
       disabled={disabled}
     >

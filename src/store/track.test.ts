@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, test } from 'vitest';
 import type { SqlDriver } from './driver';
 import { migrate } from './schema';
 import { createNodeDriver } from './testing/nodeDriver';
-import { listDays, loadTrack } from './track';
+import { listDays, loadOverviewTrack, loadTrack } from './track';
 
 const DAY = 24 * 60 * 60 * 1000;
 const MORNING = Date.UTC(2026, 7, 2, 9, 0, 0);
@@ -145,5 +145,74 @@ describe('listDays', () => {
 
     expect(day.from).toBeLessThanOrEqual(MORNING);
     expect(day.to).toBeGreaterThanOrEqual(MORNING + 3_600_000);
+  });
+});
+
+describe('loadOverviewTrack', () => {
+  test('returns null when nothing has been recorded', async () => {
+    expect(await loadOverviewTrack(driver)).toBeNull();
+  });
+
+  test('ignores segments with only one point', async () => {
+    await segment(1, MORNING);
+    await point(1, MORNING);
+
+    expect(await loadOverviewTrack(driver)).toBeNull();
+  });
+
+  test('assembles multiple segments into a MultiLineString feature', async () => {
+    await segment(1, MORNING);
+    await driver.run(
+      'INSERT INTO points (segment_id, ts, lat, lon, accuracy) VALUES (?, ?, ?, ?, ?)',
+      [1, MORNING, 25.0, 121.5, 5],
+    );
+    await driver.run(
+      'INSERT INTO points (segment_id, ts, lat, lon, accuracy) VALUES (?, ?, ?, ?, ?)',
+      [1, MORNING + 1000, 25.001, 121.501, 5],
+    );
+
+    await segment(2, MORNING + DAY);
+    await driver.run(
+      'INSERT INTO points (segment_id, ts, lat, lon, accuracy) VALUES (?, ?, ?, ?, ?)',
+      [2, MORNING + DAY, 25.1, 121.6, 5],
+    );
+    await driver.run(
+      'INSERT INTO points (segment_id, ts, lat, lon, accuracy) VALUES (?, ?, ?, ?, ?)',
+      [2, MORNING + DAY + 1000, 25.102, 121.602, 5],
+    );
+
+    const feature = await loadOverviewTrack(driver);
+    expect(feature).not.toBeNull();
+    expect(feature?.geometry.type).toBe('MultiLineString');
+    expect(feature?.geometry.coordinates).toHaveLength(2);
+    expect(feature?.geometry.coordinates[0]).toEqual([
+      [121.5, 25.0],
+      [121.501, 25.001],
+    ]);
+    expect(feature?.geometry.coordinates[1]).toEqual([
+      [121.6, 25.1],
+      [121.602, 25.102],
+    ]);
+  });
+
+  test('downsamples points closer than 10 meters while retaining segment endpoints', async () => {
+    await segment(1, MORNING);
+    // 0.00001 deg lat is ~1.1 meters
+    for (let i = 0; i <= 20; i++) {
+      await driver.run(
+        'INSERT INTO points (segment_id, ts, lat, lon, accuracy) VALUES (?, ?, ?, ?, ?)',
+        [1, MORNING + i * 1000, 25.0 + i * 0.00001, 121.5, 5],
+      );
+    }
+
+    const feature = await loadOverviewTrack(driver);
+    expect(feature).not.toBeNull();
+    const line = feature!.geometry.coordinates[0];
+    // 21 points spaced by 1.1m (total ~22m) should be downsampled to ~3 points (start, ~10m, and end)
+    expect(line.length).toBeLessThan(6);
+    expect(line.length).toBeGreaterThanOrEqual(2);
+    // Exact start and end are preserved
+    expect(line[0]).toEqual([121.5, 25.0]);
+    expect(line[line.length - 1]).toEqual([121.5, 25.0002]);
   });
 });

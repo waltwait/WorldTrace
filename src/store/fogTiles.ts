@@ -27,6 +27,27 @@ export async function loadAllTiles(driver: SqlDriver): Promise<TileBitmap[]> {
   }));
 }
 
+export interface FogTilesSignature {
+  count: number;
+  lastUpdated: number | null;
+}
+
+/**
+ * Fast-path query: reports how many tiles exist and the newest updated_at timestamp.
+ * Allows useRecorder to avoid reloading all tile BLOBs when nothing has changed.
+ */
+export async function getFogTilesSignature(driver: SqlDriver): Promise<FogTilesSignature> {
+  const row = await driver.get<{ count: number; last_updated: number | null }>(
+    'SELECT COUNT(*) AS count, MAX(updated_at) AS last_updated FROM fog_tiles WHERE z = ?',
+    [FOG_ZOOM],
+  );
+
+  return {
+    count: row?.count ?? 0,
+    lastUpdated: row?.last_updated ?? null,
+  };
+}
+
 export interface RejectionSummary {
   reason: RejectionReason;
   count: number;
