@@ -1,0 +1,31 @@
+name: CI
+
+# The Android build deliberately does not run here. android/ is not in the
+# repository and credentials/ never leaves the machine that holds the release
+# keystore, so a build on a runner would fail by design in build.gradle rather
+# than tell anyone anything. Signing and publishing stay local: tools/release.sh.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # The store tests run real SQL through node:sqlite, which does not
+          # exist before Node 22. Matches the version used locally.
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run typecheck
+
+      - run: npm test
