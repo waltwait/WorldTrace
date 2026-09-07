@@ -1,8 +1,10 @@
-import { useEffect, useState } from 'react';
+import { memo, useEffect, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import type { TrackSegment } from '../export/gpx';
 import { database } from '../store/database';
-import { listDays, loadTrack, type TrackDay } from '../store/track';
+import { getCachedDays, listDays, loadTrack, type TrackDay } from '../store/track';
+import { FadeIn } from './FadeIn';
+import { staggerDelay } from './motion';
 import { radius, theme } from './theme';
 
 export interface TimelineScreenProps {
@@ -10,8 +12,8 @@ export interface TimelineScreenProps {
   onSelectDay: (label: string, segments: TrackSegment[]) => void;
 }
 
-export function TimelineScreen({ onSelectDay }: TimelineScreenProps) {
-  const [days, setDays] = useState<TrackDay[] | null>(null);
+export const TimelineScreen = memo(function TimelineScreen({ onSelectDay }: TimelineScreenProps) {
+  const [days, setDays] = useState<TrackDay[] | null>(() => getCachedDays());
   const [busy, setBusy] = useState<string | null>(null);
 
   useEffect(() => {
@@ -49,20 +51,25 @@ export function TimelineScreen({ onSelectDay }: TimelineScreenProps) {
         <Text style={styles.hint}>還沒有任何記錄。帶著手機出門走一段，這裡就會出現。</Text>
       ) : null}
 
-      {days?.map((day) => (
-        <Pressable key={day.date} style={styles.day} onPress={() => void open(day)}>
-          <View style={styles.dayText}>
-            <Text style={styles.dayDate}>{day.date}</Text>
-            <Text style={styles.dayMeta}>
-              {day.pointCount} 個定位點 · {formatSpan(day.from, day.to)}
-            </Text>
-          </View>
-          <Text style={styles.chevron}>{busy === day.date ? '…' : '在地圖上看 ›'}</Text>
-        </Pressable>
+      {days?.map((day, index) => (
+        <FadeIn key={day.date} delay={staggerDelay(index)}>
+          <Pressable
+            style={({ pressed }) => [styles.day, pressed && { opacity: 0.7 }]}
+            onPress={() => void open(day)}
+          >
+            <View style={styles.dayText}>
+              <Text style={styles.dayDate}>{day.date}</Text>
+              <Text style={styles.dayMeta}>
+                {day.pointCount} 個定位點 · {formatSpan(day.from, day.to)}
+              </Text>
+            </View>
+            <Text style={styles.chevron}>{busy === day.date ? '…' : '在地圖上看 ›'}</Text>
+          </Pressable>
+        </FadeIn>
       ))}
     </ScrollView>
   );
-}
+});
 
 function formatSpan(from: number, to: number): string {
   const time = (ms: number) => {

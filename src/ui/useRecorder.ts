@@ -7,17 +7,24 @@
  * closed, or by fixes the OS delivered in a batch.
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   LocationPermissionDenied,
   startBackgroundRecording,
 } from '../capture/backgroundTask';
 import { exploredSquareMeters } from '../fog/area';
-import type { TileBitmap } from '../fog/geojson';
+import { createFogBuilder, type FogBuilder } from '../fog/fogGeometry';
+import { fogFeature, type PolygonFeature, type TileBitmap } from '../fog/geojson';
 import { database } from '../store/database';
 import type { SqlDriver } from '../store/driver';
-import { loadAllTiles, recentRejections, type RejectionSummary } from '../store/fogTiles';
-import { totalDistanceMeters } from '../store/stats';
+import {
+  getFogTilesSignature,
+  loadAllTiles,
+  recentRejections,
+  type FogTilesSignature,
+  type RejectionSummary,
+} from '../store/fogTiles';
+import { getPointsSignature, totalDistanceMeters, type PointsSignature } from '../store/stats';
 
 export type RecorderStatus = 'starting' | 'recording' | 'denied' | 'failed';
 
@@ -25,6 +32,9 @@ export interface RecorderState {
   status: RecorderStatus;
   error: string | null;
   tiles: TileBitmap[];
+  /** The drawable fog, built here rather than in render: at any real scale it
+      costs far too much to sit on the path of a re-render. */
+  fog: PolygonFeature;
   exploredSquareMeters: number;
   distanceMeters: number;
   rejections: RejectionSummary[];
@@ -35,28 +45,91 @@ export interface RecorderState {
 const REFRESH_INTERVAL_MS = 3000;
 const REJECTION_WINDOW_MS = 24 * 60 * 60 * 1000;
 
-async function readSnapshot(driver: SqlDriver) {
-  const [tiles, rejections, distanceMeters] = await Promise.all([
-    loadAllTiles(driver),
+const EMPTY_FOG = fogFeature([]);
+
+interface CacheState {
+  fogSignature: FogTilesSignature | null;
+  pointsSignature: PointsSignature | null;
+  builder: FogBuilder;
+  tiles: TileBitmap[];
+  fog: PolygonFeature;
+  exploredSquareMeters: number;
+  distanceMeters: number;
+}
+
+function sameRejections(a: RejectionSummary[], b: RejectionSummary[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i].reason !== b[i].reason || a[i].count !== b[i].count || a[i].lastAt !== b[i].lastAt) {
+      return false;
+    }
+  }
+  return true;
+}
+
+async function readSnapshot(driver: SqlDriver, cache: CacheState) {
+  const [fogSig, pointsSig, rejections] = await Promise.all([
+    getFogTilesSignature(driver),
+    getPointsSignature(driver),
     recentRejections(driver, Date.now() - REJECTION_WINDOW_MS),
-    totalDistanceMeters(driver),
   ]);
+
+  let tiles = cache.tiles;
+  let fog = cache.fog;
+  let explored = cache.exploredSquareMeters;
+  let distanceMeters = cache.distanceMeters;
+
+  // Only reload all tile BLOBs and recalculate popcounts if tiles actually changed.
+  if (
+    cache.fogSignature === null ||
+    cache.fogSignature.count !== fogSig.count ||
+    cache.fogSignature.lastUpdated !== fogSig.lastUpdated
+  ) {
+    tiles = await loadAllTiles(driver);
+    explored = exploredSquareMeters(tiles);
+    // Only the tiles whose bytes moved are traced again; see fogGeometry.ts.
+    fog = cache.builder.build(tiles);
+    cache.fogSignature = fogSig;
+    cache.tiles = tiles;
+    cache.fog = fog;
+    cache.exploredSquareMeters = explored;
+  }
+
+  // Only recompute total distance if points actually changed.
+  if (
+    cache.pointsSignature === null ||
+    cache.pointsSignature.count !== pointsSig.count ||
+    cache.pointsSignature.lastTs !== pointsSig.lastTs
+  ) {
+    distanceMeters = await totalDistanceMeters(driver, pointsSig);
+    cache.pointsSignature = pointsSig;
+    cache.distanceMeters = distanceMeters;
+  }
 
   return {
     tiles,
+    fog,
     rejections,
     distanceMeters,
-    // Measured here rather than at each screen, so the map panel and the stats
-    // page can never disagree about how much has been uncovered.
-    exploredSquareMeters: exploredSquareMeters(tiles),
+    exploredSquareMeters: explored,
   };
 }
 
 export function useRecorder(): RecorderState {
   const [status, setStatus] = useState<RecorderStatus>('starting');
   const [error, setError] = useState<string | null>(null);
+  const cacheRef = useRef<CacheState>({
+    fogSignature: null,
+    pointsSignature: null,
+    builder: createFogBuilder(),
+    tiles: [],
+    fog: EMPTY_FOG,
+    exploredSquareMeters: 0,
+    distanceMeters: 0,
+  });
   const [data, setData] = useState({
     tiles: [] as TileBitmap[],
+    fog: EMPTY_FOG,
     rejections: [] as RejectionSummary[],
     distanceMeters: 0,
     exploredSquareMeters: 0,
@@ -78,9 +151,19 @@ export function useRecorder(): RecorderState {
         if (cancelled) return;
 
         const read = async () => {
-          const snapshot = await readSnapshot(driver);
+          const snapshot = await readSnapshot(driver, cacheRef.current);
           if (!cancelled) {
-            setData(snapshot);
+            setData((prev) => {
+              if (
+                prev.tiles === snapshot.tiles &&
+                prev.distanceMeters === snapshot.distanceMeters &&
+                prev.exploredSquareMeters === snapshot.exploredSquareMeters &&
+                sameRejections(prev.rejections, snapshot.rejections)
+              ) {
+                return prev;
+              }
+              return snapshot;
+            });
             setStatus('recording');
           }
         };
@@ -103,5 +186,10 @@ export function useRecorder(): RecorderState {
     };
   }, [tick]);
 
-  return { status, error, ...data, refresh };
+  // Every screen is memoised on this object. A fresh one per render would
+  // defeat all of them, and a tab switch re-renders the tree three times.
+  return useMemo(
+    () => ({ status, error, ...data, refresh }),
+    [status, error, data, refresh],
+  );
 }

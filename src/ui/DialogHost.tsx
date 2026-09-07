@@ -6,10 +6,11 @@
  * pass a handler down.
  */
 
-import { useEffect, useState } from 'react';
-import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { Animated, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import { answer, current, subscribe, type DialogRequest } from './dialog';
 import { radius, theme } from './theme';
+import { useReducedMotion } from './useReducedMotion';
 
 export function DialogHost() {
   const [request, setRequest] = useState<DialogRequest | null>(current);
@@ -27,14 +28,14 @@ export function DialogHost() {
     >
       <View style={styles.scrim}>
         {request ? (
-          <View style={styles.card}>
+          <DialogCard key={request.id}>
             <Text style={styles.title}>{request.title}</Text>
             {request.message ? <Text style={styles.message}>{request.message}</Text> : null}
 
             <View style={styles.buttons}>
               {request.cancelLabel ? (
                 <Pressable
-                  style={styles.cancel}
+                  style={({ pressed }) => [styles.cancel, pressed && { opacity: 0.7 }]}
                   onPress={() => answer(request.id, false)}
                   hitSlop={4}
                 >
@@ -43,7 +44,11 @@ export function DialogHost() {
               ) : null}
 
               <Pressable
-                style={[styles.confirm, request.destructive && styles.confirmDestructive]}
+                style={({ pressed }) => [
+                  styles.confirm,
+                  request.destructive && styles.confirmDestructive,
+                  pressed && { opacity: 0.8 },
+                ]}
                 onPress={() => answer(request.id, true)}
                 hitSlop={4}
               >
@@ -54,10 +59,44 @@ export function DialogHost() {
                 </Text>
               </Pressable>
             </View>
-          </View>
+          </DialogCard>
         ) : null}
       </View>
     </Modal>
+  );
+}
+
+/**
+ * The card, springing up to meet the scrim's fade.
+ *
+ * Mounted fresh per request (keyed on its id), so the scale always starts from
+ * 0.9 without anyone having to rewind it. Only the entrance is animated: the
+ * Modal's own fade covers the exit, and animating that out would mean holding
+ * an answered dialog on screen waiting for it.
+ */
+function DialogCard({ children }: { children: ReactNode }) {
+  const reduced = useReducedMotion();
+  const scale = useRef(new Animated.Value(0.9)).current;
+
+  useEffect(() => {
+    if (reduced) {
+      scale.setValue(1);
+      return;
+    }
+
+    const animation = Animated.spring(scale, {
+      toValue: 1,
+      tension: 180,
+      friction: 15,
+      useNativeDriver: true,
+    });
+
+    animation.start();
+    return () => animation.stop();
+  }, [reduced, scale]);
+
+  return (
+    <Animated.View style={[styles.card, { transform: [{ scale }] }]}>{children}</Animated.View>
   );
 }
 

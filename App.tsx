@@ -1,16 +1,14 @@
 import { StatusBar } from 'expo-status-bar';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  Animated,
   AppState,
-  PanResponder,
+  Easing,
   Pressable,
-  ScrollView,
   StyleSheet,
   Text,
   View,
   useWindowDimensions,
-  type NativeScrollEvent,
-  type NativeSyntheticEvent,
 } from 'react-native';
 import { autoBackUp } from './src/cloud/cloudBackup';
 import type { TrackSegment } from './src/export/gpx';
@@ -19,6 +17,9 @@ import { database } from './src/store/database';
 import { BackupScreen } from './src/ui/BackupScreen';
 import { DialogHost } from './src/ui/DialogHost';
 import { MapScreen } from './src/ui/MapScreen';
+import { CURVE, DURATION } from './src/ui/motion';
+import { pageSlide } from './src/ui/slide';
+import { useReducedMotion } from './src/ui/useReducedMotion';
 import { StatsScreen } from './src/ui/StatsScreen';
 import { theme } from './src/ui/theme';
 import { TimelineScreen } from './src/ui/TimelineScreen';
@@ -28,13 +29,6 @@ const TABS = ['地圖', '探索', '時間軸', '備份'] as const;
 
 /**
  * Backs up in the background when the app comes to the foreground.
- *
- * Foreground rather than on a timer: a scheduled job would have to hold a
- * Google session alive in a context that gets torn down constantly, and the
- * schedule itself already refuses to upload more than once every few hours. If
- * it fails — offline, signed out, token expired — it stays quiet. A backup
- * failing is not something to interrupt someone's walk over, and the Backup
- * screen shows the real state whenever they look.
  */
 function useAutomaticBackup(): void {
   useEffect(() => {
@@ -45,9 +39,6 @@ function useAutomaticBackup(): void {
       running = true;
       try {
         const driver = await database();
-        // Naming ground first: it is cheap, it needs no account, and it is what
-        // the stats screen is waiting on. A backup that cannot run must not
-        // stop it.
         await resolvePlaces(driver).catch((error) =>
           console.warn('[WorldTrace] place lookup skipped', error),
         );
@@ -73,103 +64,237 @@ interface Highlight {
   segments: TrackSegment[];
 }
 
+/**
+ * One page of the pager, moved by a native RenderThread transform.
+ *
+ * The container is an Animated.View in every state, hidden ones included. That
+ * is load-bearing rather than tidy: React reconciles by element type, so
+ * handing back a plain View while a page was hidden tore the entire subtree
+ * down and rebuilt it on every switch — MapLibre's native map destroyed and
+ * re-created, every screen's database effect run again. See slide.ts.
+ */
+function SlideScreen({
+  tabIndex,
+  activeIndex,
+  prevIndex,
+  slideDir,
+  slideAnim,
+  width,
+  children,
+}: {
+  tabIndex: number;
+  activeIndex: number;
+  prevIndex: number | null;
+  slideDir: 1 | -1;
+  slideAnim: Animated.Value;
+  width: number;
+  children: React.ReactNode;
+}) {
+  const isCurrent = tabIndex === activeIndex;
+  const slide = pageSlide(tabIndex, activeIndex, prevIndex, slideDir);
+
+  const translateX = slide.animated
+    ? slideAnim.interpolate({
+        inputRange: [0, 1],
+        outputRange: [slide.from * width, slide.to * width],
+      })
+    : slide.from * width;
+
+  // The page being left dims as it goes, which is most of what makes the
+  // switch read as one screen giving way to another rather than a hard cut.
+  const opacity = slide.animated
+    ? slideAnim.interpolate({
+        inputRange: [0, 1],
+        outputRange: [slide.opacityFrom, slide.opacityTo],
+      })
+    : slide.opacityFrom;
+
+  return (
+    <Animated.View
+      style={[
+        styles.page,
+        {
+          transform: [{ translateX }],
+          zIndex: isCurrent ? 2 : slide.visible ? 1 : -1,
+          opacity,
+        },
+      ]}
+      pointerEvents={isCurrent ? 'auto' : 'none'}
+    >
+      {children}
+    </Animated.View>
+  );
+}
+
 export default function App() {
-  const { width } = useWindowDimensions();
-  // The recorder lives here rather than inside MapScreen so that recording and
-  // the fog snapshot survive moving between tabs.
   const recorder = useRecorder();
   const [index, setIndex] = useState(0);
+  const [prevIndex, setPrevIndex] = useState<number | null>(null);
+  const [slideDir, setSlideDir] = useState<1 | -1>(1);
   const [highlighted, setHighlighted] = useState<Highlight | null>(null);
-  const pager = useRef<ScrollView>(null);
+
+  const { width } = useWindowDimensions();
+  const [barWidth, setBarWidth] = useState(width);
+  const tabAnim = useRef(new Animated.Value(0)).current;
+  // A transition owns its own value. Rewinding a shared one has to happen in
+  // the tap handler, which lands a frame before React commits the new render —
+  // long enough to drag the page still on screen a full width sideways.
+  const [slideAnim, setSlideAnim] = useState(() => new Animated.Value(1));
+  const runningSlide = useRef<Animated.Value | null>(null);
+  const reducedMotion = useReducedMotion();
 
   useAutomaticBackup();
 
+  const indexRef = useRef(index);
+  indexRef.current = index;
+
   const goTo = useCallback(
     (next: number) => {
+      const current = indexRef.current;
       const clamped = Math.max(0, Math.min(TABS.length - 1, next));
+      if (clamped === current) return;
+
+      setSlideDir(clamped > current ? 1 : -1);
+
+      if (reducedMotion) {
+        // No prev page, so nothing is left mid-flight: the new page renders
+        // at rest and the old one is simply gone.
+        runningSlide.current = null;
+        tabAnim.setValue(clamped);
+        setPrevIndex(null);
+        setIndex(clamped);
+        return;
+      }
+
+      const anim = new Animated.Value(0);
+      runningSlide.current = anim;
+
+      setPrevIndex(current);
       setIndex(clamped);
-      pager.current?.scrollTo({ x: clamped * width, animated: true });
+      setSlideAnim(anim);
+
+      Animated.parallel([
+        Animated.spring(tabAnim, {
+          toValue: clamped,
+          tension: 110,
+          friction: 12,
+          useNativeDriver: true,
+        }),
+        Animated.timing(anim, {
+          toValue: 1,
+          duration: DURATION.page,
+          easing: Easing.bezier(...CURVE.move),
+          useNativeDriver: true,
+        }),
+      ]).start(() => {
+        // A tab tapped mid-slide cuts this animation short. Clearing prevIndex
+        // then would yank away the page that newer transition is still
+        // sliding out.
+        if (runningSlide.current === anim) setPrevIndex(null);
+      });
     },
-    [width],
+    [tabAnim, reducedMotion],
   );
 
-  /**
-   * Sliding along the tab bar also changes page.
-   *
-   * On the map page a horizontal drag belongs to the map — panning it is the
-   * whole point — so the pager never sees that gesture. This gives a way to
-   * move between tabs that works everywhere.
-   */
-  const barGestures = useRef(
-    PanResponder.create({
-      onMoveShouldSetPanResponder: (_, gesture) =>
-        Math.abs(gesture.dx) > 12 && Math.abs(gesture.dx) > Math.abs(gesture.dy),
-      onPanResponderRelease: (_, gesture) => {
-        if (Math.abs(gesture.dx) < 40) return;
-        setIndex((current) => {
-          const next = Math.max(
-            0,
-            Math.min(TABS.length - 1, current + (gesture.dx < 0 ? 1 : -1)),
-          );
-          pager.current?.scrollTo({ x: next * width, animated: true });
-          return next;
-        });
-      },
-    }),
-  ).current;
+  const clearHighlight = useCallback(() => setHighlighted(null), []);
 
-  function onPaged(event: NativeSyntheticEvent<NativeScrollEvent>) {
-    const page = Math.round(event.nativeEvent.contentOffset.x / width);
-    if (page !== index) setIndex(page);
-  }
+  const reviewDay = useCallback(
+    (label: string, segments: TrackSegment[]) => {
+      setHighlighted({ label, segments });
+      goTo(0);
+    },
+    [goTo],
+  );
 
-  function reviewDay(label: string, segments: TrackSegment[]) {
-    setHighlighted({ label, segments });
-    goTo(0);
-  }
+  const tabWidth = barWidth / TABS.length;
+  const indicatorWidth = 22;
+  const indicatorLeft = (tabWidth - indicatorWidth) / 2;
+
+  const indicatorTranslateX = tabAnim.interpolate({
+    inputRange: [0, 1, 2, 3],
+    outputRange: [
+      0 * tabWidth + indicatorLeft,
+      1 * tabWidth + indicatorLeft,
+      2 * tabWidth + indicatorLeft,
+      3 * tabWidth + indicatorLeft,
+    ],
+  });
 
   return (
     <View style={styles.container}>
       <StatusBar style="light" />
 
-      <ScrollView
-        ref={pager}
-        horizontal
-        pagingEnabled
-        showsHorizontalScrollIndicator={false}
-        onMomentumScrollEnd={onPaged}
-        // Off on the map page. A horizontal ScrollView will happily intercept
-        // drags from a native child, which would leave the map unpannable —
-        // and panning the map is the point of the map. Leaving that page is
-        // done from the tab bar instead, by tap or by sliding along it.
-        scrollEnabled={index !== 0}
-        style={styles.pager}
-      >
-        <View style={{ width }}>
+      {/* Stacked screens with silky horizontal slide and persistent map memory */}
+      <View style={styles.screens}>
+        <SlideScreen
+          tabIndex={0}
+          activeIndex={index}
+          prevIndex={prevIndex}
+          slideDir={slideDir}
+          slideAnim={slideAnim}
+          width={width}
+        >
           <MapScreen
             recorder={recorder}
             highlighted={highlighted}
-            onClearHighlight={() => setHighlighted(null)}
+            onClearHighlight={clearHighlight}
           />
-        </View>
-        <View style={{ width }}>
-          <StatsScreen recorder={recorder} />
-        </View>
-        <View style={{ width }}>
+        </SlideScreen>
+        <SlideScreen
+          tabIndex={1}
+          activeIndex={index}
+          prevIndex={prevIndex}
+          slideDir={slideDir}
+          slideAnim={slideAnim}
+          width={width}
+        >
+          <StatsScreen recorder={recorder} active={index === 1} />
+        </SlideScreen>
+        <SlideScreen
+          tabIndex={2}
+          activeIndex={index}
+          prevIndex={prevIndex}
+          slideDir={slideDir}
+          slideAnim={slideAnim}
+          width={width}
+        >
           <TimelineScreen onSelectDay={reviewDay} />
-        </View>
-        <View style={{ width }}>
+        </SlideScreen>
+        <SlideScreen
+          tabIndex={3}
+          activeIndex={index}
+          prevIndex={prevIndex}
+          slideDir={slideDir}
+          slideAnim={slideAnim}
+          width={width}
+        >
           <BackupScreen />
-        </View>
-      </ScrollView>
+        </SlideScreen>
+      </View>
 
-      <View style={styles.tabBar} {...barGestures.panHandlers}>
+      <View
+        style={styles.tabBar}
+        onLayout={(e) => setBarWidth(e.nativeEvent.layout.width)}
+      >
+        <Animated.View
+          style={[
+            styles.activeIndicator,
+            {
+              width: indicatorWidth,
+              transform: [{ translateX: indicatorTranslateX }],
+            },
+          ]}
+        />
         {TABS.map((label, tabIndex) => (
-          <Pressable key={label} style={styles.tab} onPress={() => goTo(tabIndex)}>
+          <Pressable
+            key={label}
+            hitSlop={{ top: 12, bottom: 12, left: 10, right: 10 }}
+            style={({ pressed }) => [styles.tab, pressed && { opacity: 0.5 }]}
+            onPress={() => goTo(tabIndex)}
+          >
             <Text style={[styles.tabLabel, index === tabIndex && styles.tabLabelActive]}>
               {label}
             </Text>
-            <View style={[styles.tabIndicator, index !== tabIndex && styles.tabIndicatorIdle]} />
           </Pressable>
         ))}
       </View>
@@ -183,21 +308,39 @@ export default function App() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: theme.background },
-  pager: { flex: 1 },
+  screens: {
+    flex: 1,
+    position: 'relative',
+    overflow: 'hidden',
+  },
+  page: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: theme.background,
+  },
 
   tabBar: {
+    position: 'relative',
     flexDirection: 'row',
     paddingTop: 16,
-    paddingBottom: 10,
+    paddingBottom: 14,
     backgroundColor: theme.surfaceSolid,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: theme.border,
   },
-  tab: { flex: 1, alignItems: 'center', gap: 5, paddingVertical: 2 },
+  tab: { flex: 1, alignItems: 'center', paddingVertical: 2 },
   tabLabel: { color: theme.textFaint, fontSize: 12, letterSpacing: 0.5 },
   tabLabelActive: { color: theme.text, fontWeight: '600' },
-  tabIndicator: { width: 16, height: 2, borderRadius: 1, backgroundColor: theme.accent },
-  // Kept in the tree rather than removed, so the row does not shift by 2px
-  // every time the page changes.
-  tabIndicatorIdle: { backgroundColor: 'transparent' },
+  activeIndicator: {
+    position: 'absolute',
+    bottom: 8,
+    left: 0,
+    height: 2.5,
+    borderRadius: 1.5,
+    backgroundColor: theme.accent,
+  },
 });
+

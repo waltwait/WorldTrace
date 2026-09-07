@@ -1,10 +1,11 @@
 import { Camera, GeoJSONSource, Layer, Map, UserLocation } from '@maplibre/maplibre-react-native';
 import type { StyleSpecification } from '@maplibre/maplibre-gl-style-spec';
-import { useMemo } from 'react';
+import { memo, useMemo } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import type { TrackSegment } from '../export/gpx';
-import { fogFeature } from '../fog/geojson';
 import { compareToLandmark, formatEarthShare } from './earth';
+import { FadeIn } from './FadeIn';
+import { DURATION } from './motion';
 import { formatArea, formatDistance } from './format';
 import { radius, theme } from './theme';
 import type { RecorderState } from './useRecorder';
@@ -31,11 +32,11 @@ export interface MapScreenProps {
   onClearHighlight: () => void;
 }
 
-export function MapScreen({ recorder, highlighted, onClearHighlight }: MapScreenProps) {
-  // Rebuilding the fog geometry is the expensive part of a frame, so it is
-  // tied to the tiles themselves rather than to every counter update.
-  const fog = useMemo(() => fogFeature(recorder.tiles), [recorder.tiles]);
-
+export const MapScreen = memo(function MapScreen({
+  recorder,
+  highlighted,
+  onClearHighlight,
+}: MapScreenProps) {
   const trackLines = useMemo(() => {
     if (!highlighted) return null;
 
@@ -73,10 +74,14 @@ export function MapScreen({ recorder, highlighted, onClearHighlight }: MapScreen
         <Camera
           initialViewState={{ center: INITIAL_CENTER, zoom: 15, bearing: 0 }}
           trackUserLocation={highlighted ? undefined : 'default'}
+          maxZoom={18}
         />
         <UserLocation />
 
-        <GeoJSONSource id="fog" data={fog}>
+        {/* maxzoom=18 keeps deep street-level clarity while keeping vector
+            tile generation lightning fast so fog tracks user pinch zooms instantaneously.
+            tolerance=0 prevents Douglas-Peucker simplification from collapsing holes. */}
+        <GeoJSONSource id="fog" data={recorder.fog} maxzoom={18} tolerance={0}>
           <Layer
             id="fog-fill"
             type="fill"
@@ -85,7 +90,7 @@ export function MapScreen({ recorder, highlighted, onClearHighlight }: MapScreen
         </GeoJSONSource>
 
         {trackLines ? (
-          <GeoJSONSource id="day-track" data={trackLines}>
+          <GeoJSONSource id="day-track" data={trackLines} maxzoom={18}>
             <Layer
               id="day-track-line"
               type="line"
@@ -97,10 +102,22 @@ export function MapScreen({ recorder, highlighted, onClearHighlight }: MapScreen
       </Map>
 
       {highlighted ? (
-        <Pressable style={styles.highlightBanner} onPress={onClearHighlight}>
-          <Text style={styles.highlightText}>{highlighted.label} 的軌跡</Text>
-          <Text style={styles.highlightDismiss}>返回即時 ✕</Text>
-        </Pressable>
+        // Keyed on the day so picking another one plays the entrance again.
+        // Delayed past the page slide: one thing moves at a time.
+        <FadeIn
+          key={highlighted.label}
+          style={styles.highlightAnchor}
+          offset={-8}
+          delay={DURATION.page}
+        >
+          <Pressable
+            style={({ pressed }) => [styles.highlightBanner, pressed && { opacity: 0.8 }]}
+            onPress={onClearHighlight}
+          >
+            <Text style={styles.highlightText}>{highlighted.label} 的軌跡</Text>
+            <Text style={styles.highlightDismiss}>返回即時 ✕</Text>
+          </Pressable>
+        </FadeIn>
       ) : null}
 
       <View style={styles.panel}>
@@ -131,7 +148,7 @@ export function MapScreen({ recorder, highlighted, onClearHighlight }: MapScreen
       </View>
     </View>
   );
-}
+});
 
 function StatusPill({ state }: { state: RecorderState }) {
   if (state.status === 'recording') {
@@ -166,11 +183,13 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: theme.background },
   map: { flex: 1 },
 
-  highlightBanner: {
+  highlightAnchor: {
     position: 'absolute',
     top: 60,
     left: 16,
     right: 16,
+  },
+  highlightBanner: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',

@@ -1,15 +1,34 @@
-import { useEffect, useState } from 'react';
-import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import { memo, useEffect, useRef, useState, type ReactNode } from 'react';
+import {
+  Animated,
+  Easing,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+  type StyleProp,
+  type TextStyle,
+} from 'react-native';
 import { evaluateAchievements, levelFor, type Achievement, type Tier } from '../progress/achievements';
 import { database } from '../store/database';
-import { buildSummary, type Summary } from '../store/summary';
+import { buildSummary, getCachedSummary, type Summary } from '../store/summary';
 import { compareToLandmark, formatEarthShare } from './earth';
+import { barTransform, countUpValue, CURVE, DURATION } from './motion';
+import { useReducedMotion } from './useReducedMotion';
 import { formatArea, formatByUnit, formatDistance, rejectionLabel } from './format';
 import { radius, theme } from './theme';
 import type { RecorderState } from './useRecorder';
 
-export function StatsScreen({ recorder }: { recorder: RecorderState }) {
-  const [summary, setSummary] = useState<Summary | null>(null);
+export const StatsScreen = memo(function StatsScreen({
+  recorder,
+  active,
+}: {
+  recorder: RecorderState;
+  active: boolean;
+}) {
+  const [summary, setSummary] = useState<Summary | null>(() => getCachedSummary());
+  const [run, setRun] = useState(0);
+  const wasActive = useRef(active);
 
   useEffect(() => {
     let cancelled = false;
@@ -23,7 +42,15 @@ export function StatsScreen({ recorder }: { recorder: RecorderState }) {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [recorder.distanceMeters, recorder.exploredSquareMeters]);
+
+  // Every screen in this app stays mounted, so "on mount" would mean counting
+  // up unseen behind another tab. The bars and digits run when this screen
+  // becomes the one being looked at.
+  useEffect(() => {
+    if (active && !wasActive.current) setRun((n) => n + 1);
+    wasActive.current = active;
+  }, [active]);
 
   if (!summary) {
     return (
@@ -46,9 +73,14 @@ export function StatsScreen({ recorder }: { recorder: RecorderState }) {
       <View style={styles.levelCard}>
         <View style={styles.levelHeader}>
           <Text style={styles.levelLabel}>等級</Text>
-          <Text style={styles.levelValue}>{level.level}</Text>
+          <RollingNumber
+            value={level.level}
+            format={(n) => String(Math.round(n))}
+            run={run}
+            style={styles.levelValue}
+          />
         </View>
-        <ProgressBar value={level.progress} />
+        <AnimatedBar value={level.progress} colour={theme.accent} run={run} />
         <Text style={styles.levelHint}>
           {level.nextLevelAtSquareMeters === null
             ? '已達最高等級'
@@ -58,13 +90,40 @@ export function StatsScreen({ recorder }: { recorder: RecorderState }) {
 
       <View style={styles.earthCard}>
         <Text style={styles.earthLabel}>佔地球表面</Text>
-        <Text style={styles.earthValue}>{formatEarthShare(summary.exploredSquareMeters)}</Text>
+        <RollingNumber
+          value={summary.exploredSquareMeters}
+          format={formatEarthShare}
+          run={run}
+          style={styles.earthValue}
+        />
         {landmark ? <Text style={styles.earthHint}>{landmark}</Text> : null}
       </View>
 
       <View style={styles.grid}>
-        <Metric label="已探索面積" value={formatArea(summary.exploredSquareMeters)} />
-        <Metric label="累計距離" value={formatDistance(summary.distanceMeters)} />
+        <Metric
+          label="已探索面積"
+          value={
+            <RollingNumber
+              value={summary.exploredSquareMeters}
+              format={formatArea}
+              run={run}
+              style={styles.metricValue}
+              fit
+            />
+          }
+        />
+        <Metric
+          label="累計距離"
+          value={
+            <RollingNumber
+              value={summary.distanceMeters}
+              format={formatDistance}
+              run={run}
+              style={styles.metricValue}
+              fit
+            />
+          }
+        />
         <Metric label="到過的國家" value={`${summary.countries}`} />
         <Metric label="到過的城市" value={`${summary.cities}`} />
         <Metric label="記錄天數" value={`${summary.dayCount}`} />
@@ -83,13 +142,13 @@ export function StatsScreen({ recorder }: { recorder: RecorderState }) {
       </View>
 
       {achievements.map((achievement) => (
-        <AchievementRow key={achievement.id} achievement={achievement} />
+        <AchievementRow key={achievement.id} achievement={achievement} run={run} />
       ))}
 
       <RejectionNotice recorder={recorder} />
     </ScrollView>
   );
-}
+});
 
 /**
  * Fixes the gatekeeper refused today.
@@ -122,17 +181,21 @@ function RejectionNotice({ recorder }: { recorder: RecorderState }) {
  * like "0.0580 km²" is the widest thing here, and letting it wrap made its card
  * taller than the two beside it, which knocked the whole grid out of line.
  */
-function Metric({ label, value }: { label: string; value: string }) {
+function Metric({ label, value }: { label: string; value: ReactNode }) {
   return (
     <View style={styles.metric}>
-      <Text
-        style={styles.metricValue}
-        numberOfLines={1}
-        adjustsFontSizeToFit
-        minimumFontScale={0.6}
-      >
-        {value}
-      </Text>
+      {typeof value === 'string' ? (
+        <Text
+          style={styles.metricValue}
+          numberOfLines={1}
+          adjustsFontSizeToFit
+          minimumFontScale={0.6}
+        >
+          {value}
+        </Text>
+      ) : (
+        value
+      )}
       <Text style={styles.metricLabel} numberOfLines={1}>
         {label}
       </Text>
@@ -148,7 +211,7 @@ const TIER_COLOURS = [theme.bronze, theme.silver, theme.gold];
  * The bar tracks the tier being worked on rather than the whole set, so it
  * refills twice on the way to gold instead of sitting near zero for years.
  */
-function AchievementRow({ achievement }: { achievement: Achievement }) {
+function AchievementRow({ achievement, run }: { achievement: Achievement; run: number }) {
   const { earned, nextTarget, unit, value } = achievement;
   const complete = nextTarget === null;
   const barColour = TIER_COLOURS[Math.min(earned, TIER_COLOURS.length - 1)];
@@ -168,14 +231,7 @@ function AchievementRow({ achievement }: { achievement: Achievement }) {
 
       <Text style={styles.achievementDescription}>{achievement.description}</Text>
 
-      <View style={styles.track}>
-        <View
-          style={[
-            styles.fill,
-            { width: `${Math.round(achievement.progress * 100)}%`, backgroundColor: barColour },
-          ]}
-        />
-      </View>
+      <AnimatedBar value={achievement.progress} colour={barColour} run={run} />
 
       <Text style={styles.achievementProgress}>
         {complete
@@ -199,11 +255,150 @@ function Medal({ tier, colour }: { tier: Tier; colour: string }) {
   );
 }
 
-function ProgressBar({ value }: { value: number }) {
+/**
+ * A bar that fills by scaling rather than by growing.
+ *
+ * Animating width would recalculate layout on the JS thread every frame. The
+ * fill is laid out at full width and squeezed instead, which the native driver
+ * runs on its own thread — see barTransform in motion.ts for the pivot maths.
+ */
+function AnimatedBar({ value, colour, run }: { value: number; colour: string; run: number }) {
+  const reduced = useReducedMotion();
+  const [trackWidth, setTrackWidth] = useState(0);
+  const progress = useRef(new Animated.Value(0)).current;
+  const runRef = useRef(run);
+
+  useEffect(() => {
+    const arriving = runRef.current !== run;
+    runRef.current = run;
+
+    if (reduced) {
+      progress.setValue(value);
+      return;
+    }
+
+    progress.setValue(0);
+    const animation = Animated.timing(progress, {
+      toValue: value,
+      duration: DURATION.bar,
+      // Let the page finish sliding in before the bars start filling: one
+      // thing moves at a time.
+      delay: arriving ? DURATION.page : 0,
+      easing: Easing.bezier(...CURVE.enter),
+      useNativeDriver: true,
+    });
+
+    animation.start();
+    return () => animation.stop();
+  }, [value, run, reduced, progress]);
+
   return (
-    <View style={styles.track}>
-      <View style={[styles.fill, { width: `${Math.round(value * 100)}%` }]} />
+    <View
+      style={styles.track}
+      onLayout={(event) => setTrackWidth(event.nativeEvent.layout.width)}
+    >
+      <Animated.View
+        style={[
+          styles.fill,
+          {
+            backgroundColor: colour,
+            transform: [
+              {
+                translateX: progress.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [
+                    barTransform(trackWidth, 0).translateX,
+                    barTransform(trackWidth, 1).translateX,
+                  ],
+                }),
+              },
+              { scaleX: progress },
+            ],
+          },
+        ]}
+      />
     </View>
+  );
+}
+
+/**
+ * A number that counts to its value.
+ *
+ * Text content cannot be driven natively, so this one does run on the JS
+ * thread — which is why it is its own component. Only this Text re-renders per
+ * frame, not the screen holding it, and only four numbers on the screen use it.
+ */
+function RollingNumber({
+  value,
+  format,
+  run,
+  style,
+  fit = false,
+}: {
+  value: number;
+  format: (value: number) => string;
+  run: number;
+  style: StyleProp<TextStyle>;
+  fit?: boolean;
+}) {
+  const reduced = useReducedMotion();
+  const [shown, setShown] = useState(value);
+  const shownRef = useRef(value);
+  const runRef = useRef(run);
+  const progress = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    const arriving = runRef.current !== run;
+    runRef.current = run;
+
+    // Arriving on the screen counts up from nothing; a value that moved while
+    // the screen was already open carries on from where the digits stood.
+    const from = arriving ? 0 : shownRef.current;
+
+    const settle = () => {
+      shownRef.current = value;
+      setShown(value);
+    };
+
+    if (reduced || from === value) {
+      settle();
+      return;
+    }
+
+    progress.setValue(0);
+    const listener = progress.addListener(({ value: t }) => {
+      const next = countUpValue(from, value, t);
+      shownRef.current = next;
+      setShown(next);
+    });
+
+    const animation = Animated.timing(progress, {
+      toValue: 1,
+      duration: DURATION.count,
+      delay: arriving ? DURATION.page : 0,
+      easing: Easing.bezier(...CURVE.enter),
+      useNativeDriver: false,
+    });
+
+    animation.start(({ finished }) => {
+      if (finished) settle();
+    });
+
+    return () => {
+      animation.stop();
+      progress.removeListener(listener);
+    };
+  }, [value, run, reduced, progress]);
+
+  return (
+    <Text
+      style={style}
+      numberOfLines={1}
+      adjustsFontSizeToFit={fit}
+      minimumFontScale={fit ? 0.6 : undefined}
+    >
+      {format(shown)}
+    </Text>
   );
 }
 
@@ -257,7 +452,8 @@ const styles = StyleSheet.create({
   earthHint: { color: theme.accent, fontSize: 12 },
 
   track: { height: 6, borderRadius: 3, backgroundColor: 'rgba(255,255,255,0.08)', overflow: 'hidden' },
-  fill: { height: 6, borderRadius: 3, backgroundColor: theme.accent },
+  // Full width and squeezed by transform; see AnimatedBar.
+  fill: { height: 6, width: '100%', borderRadius: 3, backgroundColor: theme.accent },
 
   grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
   // Two columns, not three. On a 360dp screen three cards leave about 78dp of
