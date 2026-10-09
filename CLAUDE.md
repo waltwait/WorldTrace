@@ -157,10 +157,22 @@ quietly wrong.
   tiles (no polygon holds more than one tile's holes), `view.ts` limits tracing to
   what the map shows plus a margin and coarsens the grid as zoom falls (a block
   clears if *any* cell in it is explored — never the other way round), and
-  everything outside is plain fog. `fill-antialias` is off on the layer because
+  everything outside is plain fog. Tiles around the middle of the view keep full
+  detail whatever the zoom (`HOT_TILES`): a fast zoom-in otherwise magnifies the
+  coarse blocks into bright patches of ground that was never walked, until the
+  redraw lands. The fog is redrawn *while the map is moving*
+  (`onRegionIsChanging`, when a zoom crosses into a finer grain or a drag leaves
+  what was drawn), not only when it settles — otherwise zooming in shows the
+  coarse fog for as long as the redraw takes. `fill-antialias` is off on the layer because
   antialiasing outlines every polygon edge, and neighbours share edges.
 - **`GeoJSONSource` runs `JSON.stringify` on its `data` on every render.** Pass a
   string, made once per change (`ui/useFog.ts`).
+- **`onRegionDidChange` fires on every frame in follow mode, even sitting still**
+  — about 120 times a second here, measured with logcat on the phone. Putting
+  each report into React state rendered the whole map screen that often.
+  `ui/fogController.ts` asks the fog builder whether the fog already drawn still
+  serves a report and leaves React alone if so; its tests pin that a thousand
+  identical reports ask for nothing.
 - **Two callers who arrive together both run the scan.** A cache of finished
   answers does nothing for concurrent calls; `store/sharedRead.ts` caches the
   promise instead.
@@ -200,11 +212,11 @@ quietly wrong.
 - The timeline has no "newly opened area" per day — bitmaps carry no per-day
   provenance.
 - No permission-denied guidance screen, no disk-space check.
-- The viewport fog has never run on a device. Unchecked there: that the polygon
-  seams are invisible with `fill-antialias` off, that zooming out stays intact,
-  and how long the first fog takes. Until the map reports its view the whole
-  world is fog, so explored ground can be covered for a moment after launch or a
-  long pan. Native tile errors from the map are not surfaced anywhere.
+- Zooming out, tracks beyond what was last drawn are missing until the redraw
+  lands (a fraction of a second), and a patch of newly exposed map can show
+  without fog for a moment while the native side makes its tiles. Both were seen
+  on the phone; neither is fixable from JS. Native tile errors from the map are
+  not surfaced anywhere — logcat shows none.
 - Every fog change still reloads all tile BLOBs (`loadAllTiles`) and recomputes
   the area; the viewport work only bounds tracing and rendering.
 - Published at https://github.com/waltwait/WorldTrace. `android/`, `docs/`,
