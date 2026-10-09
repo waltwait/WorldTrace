@@ -12,9 +12,9 @@ import {
   LocationPermissionDenied,
   startBackgroundRecording,
 } from '../capture/backgroundTask';
+import { runRecorderLoop } from './recorderLoop';
 import { exploredSquareMeters } from '../fog/area';
-import { createFogBuilder, type FogBuilder } from '../fog/fogGeometry';
-import { fogFeature, type PolygonFeature, type TileBitmap } from '../fog/geojson';
+import type { TileBitmap } from '../fog/geojson';
 import { database } from '../store/database';
 import type { SqlDriver } from '../store/driver';
 import {
@@ -32,9 +32,6 @@ export interface RecorderState {
   status: RecorderStatus;
   error: string | null;
   tiles: TileBitmap[];
-  /** The drawable fog, built here rather than in render: at any real scale it
-      costs far too much to sit on the path of a re-render. */
-  fog: PolygonFeature;
   exploredSquareMeters: number;
   distanceMeters: number;
   rejections: RejectionSummary[];
@@ -45,14 +42,10 @@ export interface RecorderState {
 const REFRESH_INTERVAL_MS = 3000;
 const REJECTION_WINDOW_MS = 24 * 60 * 60 * 1000;
 
-const EMPTY_FOG = fogFeature([]);
-
 interface CacheState {
   fogSignature: FogTilesSignature | null;
   pointsSignature: PointsSignature | null;
-  builder: FogBuilder;
   tiles: TileBitmap[];
-  fog: PolygonFeature;
   exploredSquareMeters: number;
   distanceMeters: number;
 }
@@ -75,7 +68,6 @@ async function readSnapshot(driver: SqlDriver, cache: CacheState) {
   ]);
 
   let tiles = cache.tiles;
-  let fog = cache.fog;
   let explored = cache.exploredSquareMeters;
   let distanceMeters = cache.distanceMeters;
 
@@ -87,11 +79,8 @@ async function readSnapshot(driver: SqlDriver, cache: CacheState) {
   ) {
     tiles = await loadAllTiles(driver);
     explored = exploredSquareMeters(tiles);
-    // Only the tiles whose bytes moved are traced again; see fogGeometry.ts.
-    fog = cache.builder.build(tiles);
     cache.fogSignature = fogSig;
     cache.tiles = tiles;
-    cache.fog = fog;
     cache.exploredSquareMeters = explored;
   }
 
@@ -108,7 +97,6 @@ async function readSnapshot(driver: SqlDriver, cache: CacheState) {
 
   return {
     tiles,
-    fog,
     rejections,
     distanceMeters,
     exploredSquareMeters: explored,
@@ -121,15 +109,12 @@ export function useRecorder(): RecorderState {
   const cacheRef = useRef<CacheState>({
     fogSignature: null,
     pointsSignature: null,
-    builder: createFogBuilder(),
     tiles: [],
-    fog: EMPTY_FOG,
     exploredSquareMeters: 0,
     distanceMeters: 0,
   });
   const [data, setData] = useState({
     tiles: [] as TileBitmap[],
-    fog: EMPTY_FOG,
     rejections: [] as RejectionSummary[],
     distanceMeters: 0,
     exploredSquareMeters: 0,
@@ -139,51 +124,34 @@ export function useRecorder(): RecorderState {
   const refresh = useCallback(() => setTick((n) => n + 1), []);
 
   useEffect(() => {
-    let cancelled = false;
-    let timer: ReturnType<typeof setInterval> | null = null;
-
-    (async () => {
-      try {
-        const driver = await database();
-        if (cancelled) return;
-
-        await startBackgroundRecording();
-        if (cancelled) return;
-
-        const read = async () => {
-          const snapshot = await readSnapshot(driver, cacheRef.current);
-          if (!cancelled) {
-            setData((prev) => {
-              if (
-                prev.tiles === snapshot.tiles &&
-                prev.distanceMeters === snapshot.distanceMeters &&
-                prev.exploredSquareMeters === snapshot.exploredSquareMeters &&
-                sameRejections(prev.rejections, snapshot.rejections)
-              ) {
-                return prev;
-              }
-              return snapshot;
-            });
-            setStatus('recording');
+    // Recording continues after the screen goes away — that is the entire point
+    // of the background task — so stopping only stops this screen listening.
+    const loop = runRecorderLoop({
+      open: database,
+      start: startBackgroundRecording,
+      read: (driver) => readSnapshot(driver, cacheRef.current),
+      isDenied: (error) => error instanceof LocationPermissionDenied,
+      onSnapshot: (snapshot) =>
+        setData((prev) => {
+          if (
+            prev.tiles === snapshot.tiles &&
+            prev.distanceMeters === snapshot.distanceMeters &&
+            prev.exploredSquareMeters === snapshot.exploredSquareMeters &&
+            sameRejections(prev.rejections, snapshot.rejections)
+          ) {
+            return prev;
           }
-        };
+          return snapshot;
+        }),
+      onStatus: (next, message) => {
+        setStatus(next);
+        setError(next === 'recording' ? null : (message ?? null));
+      },
+      onReadError: (caught) => console.warn('[WorldTrace] refresh skipped', caught),
+      intervalMs: REFRESH_INTERVAL_MS,
+    });
 
-        await read();
-        timer = setInterval(() => void read(), REFRESH_INTERVAL_MS);
-      } catch (caught) {
-        if (cancelled) return;
-
-        setStatus(caught instanceof LocationPermissionDenied ? 'denied' : 'failed');
-        setError(caught instanceof Error ? caught.message : String(caught));
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-      if (timer) clearInterval(timer);
-      // Recording deliberately continues after the screen goes away — that is
-      // the entire point of the background task.
-    };
+    return () => loop.stop();
   }, [tick]);
 
   // Every screen is memoised on this object. A fresh one per render would

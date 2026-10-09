@@ -1,6 +1,13 @@
-import { Camera, GeoJSONSource, Layer, Map, UserLocation } from '@maplibre/maplibre-react-native';
+import {
+  Camera,
+  GeoJSONSource,
+  Layer,
+  Map,
+  UserLocation,
+  type MapRef,
+} from '@maplibre/maplibre-react-native';
 import type { StyleSpecification } from '@maplibre/maplibre-gl-style-spec';
-import { memo, useMemo } from 'react';
+import { memo, useCallback, useMemo, useRef } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import type { TrackSegment } from '../export/gpx';
 import { compareToLandmark, formatEarthShare } from './earth';
@@ -8,6 +15,7 @@ import { FadeIn } from './FadeIn';
 import { DURATION } from './motion';
 import { formatArea, formatDistance } from './format';
 import { radius, theme } from './theme';
+import { useFog } from './useFog';
 import type { RecorderState } from './useRecorder';
 
 const OSM_STYLE: StyleSpecification = {
@@ -55,17 +63,34 @@ export const MapScreen = memo(function MapScreen({
 
   const landmark = compareToLandmark(recorder.exploredSquareMeters);
 
+  // The fog is built for what the map is showing, so the map has to say what
+  // that is: when it settles after a move, and once when it first loads, since
+  // nothing moves a map that is already where the user is.
+  const { fog, onMapView } = useFog(recorder.tiles);
+  const mapRef = useRef<MapRef>(null);
+  const reportView = useCallback(async () => {
+    try {
+      const state = await mapRef.current?.getViewState();
+      if (state) onMapView(state);
+    } catch {
+      // Not ready yet; the region event that follows will say.
+    }
+  }, [onMapView]);
+
   return (
     <View style={styles.container}>
       {/* androidView="texture": v11 switched Android to GLSurfaceView by
           default, which renders the map horizontally mirrored on this device.
           TextureView is the documented fallback. */}
       <Map
+        ref={mapRef}
         style={styles.map}
         mapStyle={OSM_STYLE}
         logo={false}
         attribution={false}
         androidView="texture"
+        onRegionDidChange={(event) => onMapView(event.nativeEvent)}
+        onDidFinishLoadingMap={() => void reportView()}
       >
         {/* "default" follows your position but never touches the bearing, so
             north stays up. "course" and "heading" both spin the map under you,
@@ -80,12 +105,21 @@ export const MapScreen = memo(function MapScreen({
 
         {/* maxzoom=18 keeps deep street-level clarity while keeping vector
             tile generation lightning fast so fog tracks user pinch zooms instantaneously.
-            tolerance=0 prevents Douglas-Peucker simplification from collapsing holes. */}
-        <GeoJSONSource id="fog" data={recorder.fog} maxzoom={18} tolerance={0}>
+            tolerance=0 prevents Douglas-Peucker simplification from collapsing holes.
+
+            fill-antialias is off because the fog is cut into many neighbouring
+            polygons (see fog/fogPartition.ts). Antialiasing draws a line along
+            every polygon edge in the fill's own translucent colour, so two
+            polygons sharing an edge would draw it twice, darker, as a seam. */}
+        <GeoJSONSource id="fog" data={fog} maxzoom={18} tolerance={0}>
           <Layer
             id="fog-fill"
             type="fill"
-            paint={{ 'fill-color': theme.fog, 'fill-opacity': theme.fogOpacity }}
+            paint={{
+              'fill-color': theme.fog,
+              'fill-opacity': theme.fogOpacity,
+              'fill-antialias': false,
+            }}
           />
         </GeoJSONSource>
 

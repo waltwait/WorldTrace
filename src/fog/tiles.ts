@@ -14,7 +14,7 @@ export const TILE_BITS = 128;
 const EQUATOR_METERS = 40075016.686;
 
 /** Number of tiles along one axis of the grid at FOG_ZOOM. */
-const GRID_TILES = 2 ** FOG_ZOOM;
+export const GRID_TILES = 2 ** FOG_ZOOM;
 
 /** Number of bits along one axis of the whole grid. */
 const GRID_BITS = GRID_TILES * TILE_BITS;
