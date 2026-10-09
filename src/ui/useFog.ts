@@ -6,39 +6,52 @@
  * which is wrong for a moment over ground already explored and never wrong the
  * other way.
  *
+ * The fog follows the map while it is still moving — the grain of the fog
+ * follows the zoom, and zooming in on fog drawn for a wider view shows it blocky
+ * until it is redrawn — but what to do about each report is decided in
+ * fogController.ts, which leaves React alone unless the fog really is out of
+ * date. The map reports on every frame even when it is sitting still, and a
+ * render per report is a hundred renders a second.
+ *
  * The fog is handed on as a string, serialised here once per change. The map's
  * source serialises any object it is given on every render, and a render
  * happens whenever the recorder's status or numbers move.
  */
 
 import { useCallback, useMemo, useRef, useState } from 'react';
-import { createFogBuilder, type FogBuilder } from '../fog/fogGeometry';
 import type { TileBitmap } from '../fog/geojson';
-import { viewFromMap, type FogView } from '../fog/view';
+import { createFogController, type FogController, type MapViewState } from './fogController';
 
-export interface MapViewState {
-  bounds: readonly number[];
-  zoom: number;
-}
+export type { MapViewState };
 
 export function useFog(tiles: TileBitmap[]): {
   fog: string;
+  /** The map has settled, or has just loaded: draw for exactly this view. */
   onMapView: (state: MapViewState) => void;
+  /** The map is moving: redraw if this view is no longer served. */
+  onMapMoving: (state: MapViewState) => void;
 } {
-  const builder = useRef<FogBuilder | null>(null);
-  if (builder.current === null) builder.current = createFogBuilder();
+  const [, setDrawn] = useState(0);
 
-  const [view, setView] = useState<FogView | null>(null);
+  const controller = useRef<FogController | null>(null);
+  if (controller.current === null) {
+    controller.current = createFogController({
+      requestRedraw: () => setDrawn((n) => n + 1),
+      now: Date.now,
+    });
+  }
 
-  // The builder hands back the same object while its last build still serves,
-  // so the string below is only made when the fog really changed.
-  const feature = useMemo(() => builder.current!.build(tiles, view), [tiles, view]);
+  // Cheap when nothing is out of date: the builder hands back what it has.
+  const feature = controller.current.fogFor(tiles);
   const fog = useMemo(() => JSON.stringify(feature), [feature]);
 
   const onMapView = useCallback((state: MapViewState) => {
-    const next = viewFromMap(state);
-    if (next) setView(next);
+    controller.current!.view(state, false);
   }, []);
 
-  return { fog, onMapView };
+  const onMapMoving = useCallback((state: MapViewState) => {
+    controller.current!.view(state, true);
+  }, []);
+
+  return { fog, onMapView, onMapMoving };
 }

@@ -107,6 +107,27 @@ export function tileRangeOf(view: FogView, margin = 0): TileRange {
   };
 }
 
+/**
+ * Where the middle of the view falls on the tile grid, in fractional tiles.
+ * Wraps the same way tileRangeOf does: a view across the date line is centred
+ * on the date line, not on the far side of the world.
+ */
+export function tileCentreOf(view: FogView): { x: number; y: number } {
+  const shift = Math.floor((view.west + 180) / 360) * 360;
+  const west = view.west - shift;
+  let east = view.east - shift;
+  if (east < west) east += 360;
+
+  const lon = (west + east) / 2;
+  const lat = clamp((view.north + view.south) / 2, -MAX_LAT, MAX_LAT);
+  const wrapped = (((lon + 180) / 360) % 1 + 1) % 1;
+
+  return {
+    x: wrapped * GRID_TILES,
+    y: locationToGlobalBit(lat, 0).gy / TILE_BITS,
+  };
+}
+
 export function rangeContains(outer: TileRange, inner: TileRange): boolean {
   return (
     inner.x0 >= outer.x0 &&

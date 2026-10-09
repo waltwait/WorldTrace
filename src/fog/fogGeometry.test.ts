@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { setBit } from './bitmap';
 import { fogFeature, type TileBitmap } from './geojson';
-import { createFogBuilder } from './fogGeometry';
+import { createFogBuilder, HOT_TILES } from './fogGeometry';
 import { bitmapFromRows, cellCentre, coverCount, mismatches, polygonsOf } from './testing/oracle';
 import { globalBitToLocation, locationToBit, TILE_BITS } from './tiles';
 import type { FogView } from './view';
@@ -185,15 +185,18 @@ describe('createFogBuilder', () => {
     });
 
     it('draws again at a coarser grain once the map zooms out past the point of telling cells apart', () => {
+      const away = tile(HERE.x + 8, HERE.y, [[9, 9]]);
+      const ground = [...tiles, away];
       const builder = createFogBuilder();
-      const near = builder.build(tiles, view);
-      const far = builder.build(tiles, { ...view, zoom: 10 });
+      const near = builder.build(ground, viewOf(HERE.x, HERE.y, HERE.x + 8, HERE.y));
+      const far = builder.build(ground, viewOf(HERE.x - 6, HERE.y - 6, HERE.x + 6, HERE.y + 6, 10));
 
       expect(far).not.toBe(near);
 
-      // Zoom 10 groups cells 16 to a block, so a neighbour of an explored cell
-      // in the same block is cleared too.
-      const [lon, lat] = cellCentre(tiles[1].x, tiles[1].y, 12, 12);
+      // Zoom 10 groups cells 16 to a block, so a neighbour of an explored cell in
+      // the same block is cleared too — on a tile away from the middle, where
+      // the grain follows the zoom. (The middle keeps full detail; see below.)
+      const [lon, lat] = cellCentre(away.x, away.y, 12, 12);
       expect(coverCount(polygonsOf(far), lon, lat)).toBe(0);
       expect(coverCount(polygonsOf(near), lon, lat)).toBe(1);
     });
@@ -203,6 +206,208 @@ describe('createFogBuilder', () => {
       const first = builder.build(tiles, { ...view, zoom: 16 });
 
       expect(builder.build(tiles, { ...view, zoom: 17.5 })).toBe(first);
+    });
+  });
+
+  /**
+   * Zoomed out, tiles are traced in coarse blocks, and a coarse block clears if
+   * any cell in it is explored. Zoom in fast and those blocks are magnified into
+   * a bright, blocky patch of map that was never walked, which stays until the
+   * map has stopped and the fog has been redrawn. Zooming in almost always goes
+   * towards the middle of the screen, so the tiles there are kept at full
+   * detail already: nothing is left to catch up with when the zoom arrives.
+   */
+  describe('keeping detail where a zoom is about to land', () => {
+    // Zoom 10 traces in blocks of 16 cells, so (12, 12) shares a block with (4, 4).
+    const walked = (x: number, y: number) => tile(x, y, [[4, 4]]);
+    const farView = (x: number, y: number, half = 10) =>
+      viewOf(x - half, y - half, x + half, y + half, 10);
+    const fogAtSameBlock = (fog: ReturnType<ReturnType<typeof createFogBuilder>['build']>, t: TileBitmap) => {
+      const [lon, lat] = cellCentre(t.x, t.y, 12, 12);
+      return coverCount(polygonsOf(fog), lon, lat);
+    };
+
+    it('traces the tile at the middle of a zoomed-out view cell by cell', () => {
+      const middle = walked(HERE.x, HERE.y);
+      const fog = createFogBuilder().build([middle], farView(HERE.x, HERE.y));
+
+      expect(fogAtSameBlock(fog, middle)).toBe(1);
+    });
+
+    it('still traces tiles far from the middle in coarse blocks', () => {
+      const middle = walked(HERE.x, HERE.y);
+      const away = walked(HERE.x + 8, HERE.y);
+      const fog = createFogBuilder().build([middle, away], farView(HERE.x, HERE.y));
+
+      expect(fogAtSameBlock(fog, away)).toBe(0);
+    });
+
+    it('keeps coarse blocks in their place, so the walked cell itself is clear either way', () => {
+      const middle = walked(HERE.x, HERE.y);
+      const away = walked(HERE.x + 8, HERE.y);
+      const fog = createFogBuilder().build([middle, away], farView(HERE.x, HERE.y));
+
+      for (const t of [middle, away]) {
+        const [lon, lat] = cellCentre(t.x, t.y, 4, 4);
+        expect(coverCount(polygonsOf(fog), lon, lat)).toBe(0);
+      }
+    });
+
+    it('keeps full detail for no more tiles than it can afford, nearest the middle first', () => {
+      const grid: TileBitmap[] = [];
+      for (let dy = -4; dy <= 4; dy++) {
+        for (let dx = -4; dx <= 4; dx++) grid.push(walked(HERE.x + dx, HERE.y + dy));
+      }
+      const fog = createFogBuilder().build(grid, farView(HERE.x, HERE.y, 6));
+
+      const detailed = grid.filter((t) => fogAtSameBlock(fog, t) === 1);
+      expect(detailed.length).toBeGreaterThan(0);
+      expect(detailed.length).toBeLessThanOrEqual(HOT_TILES);
+
+      // Within reach of the middle in every direction, but not all of them fit:
+      // the middle and its neighbours do, the far corner of the square does not.
+      const has = (dx: number, dy: number) =>
+        detailed.some((t) => t.x === HERE.x + dx && t.y === HERE.y + dy);
+      expect(has(0, 0)).toBe(true);
+      expect(has(1, 1)).toBe(true);
+      expect(has(-1, 0)).toBe(true);
+      expect(has(3, 3)).toBe(false);
+      expect(has(-3, -3)).toBe(false);
+    });
+
+    it('has nothing extra to keep once every tile is traced in full anyway', () => {
+      const middle = walked(HERE.x, HERE.y);
+      const ground = [middle];
+      const builder = createFogBuilder();
+      builder.build(ground, viewOf(HERE.x, HERE.y, HERE.x, HERE.y, 16));
+
+      expect(builder.isCurrent(ground, viewOf(HERE.x, HERE.y, HERE.x, HERE.y, 16.5))).toBe(true);
+    });
+
+    it('redraws when the middle of the view has moved on, so the detail goes with it', () => {
+      const ground = [walked(HERE.x, HERE.y)];
+      const builder = createFogBuilder();
+      builder.build(ground, farView(HERE.x, HERE.y));
+
+      // Still well inside what was drawn, but the detail is no longer in the middle.
+      expect(builder.isCurrent(ground, farView(HERE.x + 5, HERE.y))).toBe(false);
+    });
+
+    it('does not redraw for a nudge that leaves the detail where it is needed', () => {
+      const ground = [walked(HERE.x, HERE.y)];
+      const builder = createFogBuilder();
+      builder.build(ground, farView(HERE.x, HERE.y));
+
+      expect(builder.isCurrent(ground, farView(HERE.x + 1, HERE.y))).toBe(true);
+    });
+
+    it('follows the middle: the tile it moves to is traced in full', () => {
+      const other = walked(HERE.x + 6, HERE.y);
+      const ground = [walked(HERE.x, HERE.y), other];
+      const builder = createFogBuilder();
+      builder.build(ground, farView(HERE.x, HERE.y));
+      const fog = builder.build(ground, farView(HERE.x + 6, HERE.y));
+
+      expect(fogAtSameBlock(fog, other)).toBe(1);
+    });
+
+    it('agrees with build about whether a redraw is due', () => {
+      const ground = [walked(HERE.x, HERE.y)];
+      const builder = createFogBuilder();
+
+      for (const dx of [0, 1, 2, 3, 5, 8, 0]) {
+        const v = farView(HERE.x + dx, HERE.y);
+        const due = !builder.isCurrent(ground, v);
+        const fog = builder.build(ground, v);
+
+        // After building, a second ask and a second build must both say "same".
+        expect(builder.isCurrent(ground, v)).toBe(true);
+        expect(builder.build(ground, v)).toBe(fog);
+        if (!due) expect(builder.build(ground, v)).toBe(fog);
+      }
+    });
+  });
+
+  describe('knowing when a redraw is due', () => {
+    it('is due before anything has been drawn', () => {
+      expect(createFogBuilder().isCurrent(tiles, view)).toBe(false);
+      expect(createFogBuilder().isCurrent(tiles, null)).toBe(false);
+    });
+
+    it('is not due for the view it just drew', () => {
+      const builder = createFogBuilder();
+      builder.build(tiles, view);
+
+      expect(builder.isCurrent(tiles, view)).toBe(true);
+    });
+
+    it('is not due while the view stays inside what was drawn', () => {
+      const builder = createFogBuilder();
+      builder.build(tiles, view);
+
+      expect(builder.isCurrent(tiles, { ...view, west: view.west + 1e-5 })).toBe(true);
+    });
+
+    it('is due once the view leaves what was drawn', () => {
+      const builder = createFogBuilder();
+      builder.build(tiles, view);
+
+      expect(builder.isCurrent(tiles, viewOf(HERE.x + 30, HERE.y, HERE.x + 31, HERE.y))).toBe(false);
+    });
+
+    it('is due when zooming crosses into a finer grain, before the map has stopped', () => {
+      const builder = createFogBuilder();
+      builder.build(tiles, { ...view, zoom: 10 });
+
+      // Zoom 10 and 9.5 trace in blocks of 16; 10.5 is a level finer, in blocks of 8.
+      expect(builder.isCurrent(tiles, { ...view, zoom: 10.5 })).toBe(false);
+      expect(builder.isCurrent(tiles, { ...view, zoom: 13.5 })).toBe(false);
+      expect(builder.isCurrent(tiles, { ...view, zoom: 9.5 })).toBe(true);
+    });
+
+    it('is due when the tiles have been read again', () => {
+      const builder = createFogBuilder();
+      builder.build(tiles, view);
+
+      expect(builder.isCurrent(reread(tiles), view)).toBe(false);
+    });
+
+    it('is not due for a view that makes no sense, once the world is covered', () => {
+      const builder = createFogBuilder();
+      builder.build(tiles, null);
+
+      expect(builder.isCurrent(tiles, null)).toBe(true);
+      expect(builder.isCurrent(tiles, { ...view, zoom: NaN })).toBe(true);
+    });
+
+    it('changes nothing by being asked', () => {
+      const builder = createFogBuilder();
+      const first = builder.build(tiles, view);
+      const asked = [view, viewOf(HERE.x + 30, HERE.y, HERE.x + 31, HERE.y), null];
+      for (const v of asked) builder.isCurrent(tiles, v);
+
+      expect(builder.build(tiles, view)).toBe(first);
+      expect(builder.size).toBe(2);
+    });
+
+    it('agrees with build about whether it will hand back the same fog', () => {
+      const builder = createFogBuilder();
+      const views = [
+        view,
+        { ...view, west: view.west + 1e-5 },
+        viewOf(HERE.x + 30, HERE.y, HERE.x + 31, HERE.y),
+        { ...view, zoom: 10 },
+        { ...view, zoom: 10.5 },
+        { ...view, zoom: 16 },
+        view,
+      ];
+
+      for (const v of views) {
+        const before = builder.build(tiles, v);
+        const predicted = builder.isCurrent(tiles, v);
+        expect(predicted).toBe(true);
+        expect(builder.build(tiles, v)).toBe(before);
+      }
     });
   });
 

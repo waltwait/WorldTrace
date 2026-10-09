@@ -3,6 +3,7 @@ import {
   isUsableView,
   rangeContains,
   scaleForZoom,
+  tileCentreOf,
   tileRangeOf,
   viewFromMap,
   type FogView,
@@ -153,6 +154,40 @@ describe('tileRangeOf', () => {
 
     expect(range.x0).toBe(0);
     expect(range.x1).toBe(65535);
+  });
+});
+
+describe('tileCentreOf', () => {
+  test('falls inside the tile at the middle of the view', () => {
+    const centre = tileCentreOf(around(TAIPEI.lat, TAIPEI.lon, 0.0004));
+
+    expect(Math.floor(centre.x)).toBe(HERE.x);
+    expect(Math.floor(centre.y)).toBe(HERE.y);
+  });
+
+  test('is halfway between the edges, tile for tile', () => {
+    const range = tileRangeOf(around(TAIPEI.lat, TAIPEI.lon, 0.05));
+    const centre = tileCentreOf(around(TAIPEI.lat, TAIPEI.lon, 0.05));
+
+    expect(centre.x).toBeGreaterThan(range.x0);
+    expect(centre.x).toBeLessThan(range.x1 + 1);
+    expect(centre.y).toBeGreaterThan(range.y0);
+    expect(centre.y).toBeLessThan(range.y1 + 1);
+  });
+
+  test('reads a view panned onto a copy of the world as the same ground', () => {
+    const plain = tileCentreOf(around(TAIPEI.lat, TAIPEI.lon, 0.01));
+    const copy = tileCentreOf(around(TAIPEI.lat, TAIPEI.lon + 360, 0.01));
+
+    expect(copy.x).toBeCloseTo(plain.x, 6);
+    expect(copy.y).toBeCloseTo(plain.y, 6);
+  });
+
+  test('puts a view across the date line on the date line', () => {
+    const { x } = tileCentreOf({ west: 175, east: -175, south: -1, north: 1, zoom: 5 });
+    const edge = Math.min(x, 65536 - x);
+
+    expect(edge).toBeLessThan(1);
   });
 });
 

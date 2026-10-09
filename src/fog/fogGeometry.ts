@@ -25,6 +25,7 @@ import {
   isUsableView,
   rangeContains,
   scaleForZoom,
+  tileCentreOf,
   tileRangeOf,
   type FogView,
   type TileRange,
@@ -43,6 +44,13 @@ export interface FogBuilder {
    * serves, so a caller can tell nothing changed by comparing references.
    */
   build(tiles: TileBitmap[], view: FogView | null): MultiPolygonFeature;
+  /**
+   * Whether `build` would hand back the fog it already has. Cheap enough to ask
+   * on every frame of a gesture, which is the point: the fog can be redrawn the
+   * moment a zoom crosses into a finer grain or a drag leaves what was drawn,
+   * instead of only once the map has come to rest.
+   */
+  isCurrent(tiles: TileBitmap[], view: FogView | null): boolean;
   /** Tiles currently remembered. Exposed so tests can see the cache is bounded. */
   readonly size: number;
 }
@@ -53,6 +61,23 @@ export interface FogBuilder {
  * at worst while still making a drag back to a place just left free.
  */
 const REMEMBERED_TILES = 600;
+
+/**
+ * Zoomed out, tiles are traced in coarse blocks, and zooming in on those blocks
+ * magnifies them into patches of ground that look explored and were not, until
+ * the fog has been redrawn at the new zoom. Redrawing takes a moment, and a fast
+ * zoom outruns it. Zooms land near the middle of the screen far more often than
+ * not, so the tiles around the middle are traced in full whatever the zoom:
+ * when the zoom arrives the fog there is already right.
+ *
+ * Tiles within HOT_RADIUS of the middle, nearest first, up to HOT_TILES of them
+ * — enough for a street-level screen and its margin, few enough that tracing
+ * them stays cheap. The middle may drift HOT_DRIFT tiles before the detail is
+ * moved to follow it.
+ */
+export const HOT_TILES = 36;
+const HOT_RADIUS = 3;
+const HOT_DRIFT = 2;
 
 const WORLD_OF_FOG = fogOf(partitionFog([]));
 
@@ -70,35 +95,57 @@ interface Drawn {
   tiles: TileBitmap[] | null;
   scale: number;
   range: TileRange | null;
+  /** Where the full-detail tiles were gathered round; null when all are full detail. */
+  centre: { x: number; y: number } | null;
+}
+
+function withinDrift(from: { x: number; y: number }, to: { x: number; y: number }): boolean {
+  return Math.max(Math.abs(from.x - to.x), Math.abs(from.y - to.y)) <= HOT_DRIFT;
 }
 
 export function createFogBuilder(remembered: number = REMEMBERED_TILES): FogBuilder {
   let traced = new Map<number, Traced>();
   let drawn: Drawn | null = null;
 
+  /** The fog already drawn, if it still serves this view of these tiles. */
+  const servedBy = (tiles: TileBitmap[], view: FogView | null): MultiPolygonFeature | null => {
+    if (!drawn) return null;
+
+    if (!isUsableView(view)) return drawn.range === null ? drawn.fog : null;
+
+    if (
+      drawn.range &&
+      drawn.tiles === tiles &&
+      drawn.scale === scaleForZoom(view.zoom) &&
+      rangeContains(drawn.range, tileRangeOf(view)) &&
+      (drawn.centre === null || withinDrift(drawn.centre, tileCentreOf(view)))
+    ) {
+      return drawn.fog;
+    }
+
+    return null;
+  };
+
   return {
     get size() {
       return traced.size;
     },
 
+    isCurrent(tiles: TileBitmap[], view: FogView | null): boolean {
+      return servedBy(tiles, view) !== null;
+    },
+
     build(tiles: TileBitmap[], view: FogView | null): MultiPolygonFeature {
+      const current = servedBy(tiles, view);
+      if (current) return current;
+
       if (!isUsableView(view)) {
-        drawn = { fog: WORLD_OF_FOG, tiles: null, scale: 1, range: null };
+        drawn = { fog: WORLD_OF_FOG, tiles: null, scale: 1, range: null, centre: null };
         return WORLD_OF_FOG;
       }
 
       const scale = scaleForZoom(view.zoom);
       const seen = tileRangeOf(view);
-
-      if (
-        drawn &&
-        drawn.range &&
-        drawn.tiles === tiles &&
-        drawn.scale === scale &&
-        rangeContains(drawn.range, seen)
-      ) {
-        return drawn.fog;
-      }
 
       // Half a screen of margin on every side, at least a tile.
       const across = Math.max(seen.x1 - seen.x0, seen.y1 - seen.y0) + 1;
@@ -108,24 +155,50 @@ export function createFogBuilder(remembered: number = REMEMBERED_TILES): FogBuil
       // build, and a string per tile is a lot of garbage for the sake of a name.
       const next = new Map<number, Traced>();
       const present = new Set<number>();
-      const live: LiveTile[] = [];
+      const inRange: TileBitmap[] = [];
 
       for (const tile of tiles) {
-        const key = tile.x * GRID_TILES + tile.y;
-        present.add(key);
+        present.add(tile.x * GRID_TILES + tile.y);
 
-        if (tile.x < range.x0 || tile.x > range.x1 || tile.y < range.y0 || tile.y > range.y1) {
-          continue;
+        if (tile.x >= range.x0 && tile.x <= range.x1 && tile.y >= range.y0 && tile.y <= range.y1) {
+          inRange.push(tile);
         }
+      }
+
+      // The tiles round the middle keep full detail when everything else is
+      // coarse; see HOT_TILES.
+      const centre = scale > 1 ? tileCentreOf(view) : null;
+      const detailed = new Set<number>();
+
+      if (centre) {
+        const near: Array<{ key: number; distance: number }> = [];
+
+        for (const tile of inRange) {
+          const dx = tile.x + 0.5 - centre.x;
+          const dy = tile.y + 0.5 - centre.y;
+          if (Math.max(Math.abs(dx), Math.abs(dy)) > HOT_RADIUS) continue;
+
+          near.push({ key: tile.x * GRID_TILES + tile.y, distance: dx * dx + dy * dy });
+        }
+
+        near.sort((a, b) => a.distance - b.distance);
+        for (const { key } of near.slice(0, HOT_TILES)) detailed.add(key);
+      }
+
+      const live: LiveTile[] = [];
+
+      for (const tile of inRange) {
+        const key = tile.x * GRID_TILES + tile.y;
+        const grain = detailed.has(key) ? 1 : scale;
 
         const previous = traced.get(key);
         const entry =
-          previous && previous.scale === scale && sameBytes(previous.bitmap, tile.bitmap)
+          previous && previous.scale === grain && sameBytes(previous.bitmap, tile.bitmap)
             ? previous
             : {
                 bitmap: tile.bitmap,
-                scale,
-                trace: traceTile(tile.x, tile.y, tile.bitmap, scale),
+                scale: grain,
+                trace: traceTile(tile.x, tile.y, tile.bitmap, grain),
               };
 
         next.set(key, entry);
@@ -144,7 +217,7 @@ export function createFogBuilder(remembered: number = REMEMBERED_TILES): FogBuil
       traced = next;
 
       const fog = fogOf(partitionFog(live));
-      drawn = { fog, tiles, scale, range };
+      drawn = { fog, tiles, scale, range, centre };
       return fog;
     },
   };

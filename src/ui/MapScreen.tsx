@@ -64,9 +64,10 @@ export const MapScreen = memo(function MapScreen({
   const landmark = compareToLandmark(recorder.exploredSquareMeters);
 
   // The fog is built for what the map is showing, so the map has to say what
-  // that is: when it settles after a move, and once when it first loads, since
-  // nothing moves a map that is already where the user is.
-  const { fog, onMapView } = useFog(recorder.tiles);
+  // that is: while it moves (see useFog), when it settles after a move, and once
+  // when it first loads, since nothing moves a map that is already where the
+  // user is.
+  const { fog, onMapView, onMapMoving } = useFog(recorder.tiles);
   const mapRef = useRef<MapRef>(null);
   const reportView = useCallback(async () => {
     try {
@@ -89,6 +90,7 @@ export const MapScreen = memo(function MapScreen({
         logo={false}
         attribution={false}
         androidView="texture"
+        onRegionIsChanging={(event) => onMapMoving(event.nativeEvent)}
         onRegionDidChange={(event) => onMapView(event.nativeEvent)}
         onDidFinishLoadingMap={() => void reportView()}
       >
