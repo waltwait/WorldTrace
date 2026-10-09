@@ -40,7 +40,9 @@ for this version.
 ## Layout
 
 ```
-src/fog/         z16 tiling, 128×128 bit bitmaps, painting, GeoJSON, area
+src/fog/         z16 tiling, 128×128 bit bitmaps, painting, area, and the fog
+                 geometry: contour tracing (geojson), per-viewport build
+                 (fogGeometry, view), quadtree cut into polygons (fogPartition)
 src/gatekeeper/  accept or refuse a fix. Pure, stateful, zero I/O
 src/store/       SQLite behind the SqlDriver port; tracker, summary, milestones
 src/capture/     background location task, the sole writer
@@ -61,7 +63,7 @@ tested.
 ## Commands
 
 ```bash
-npm test                 # 345 tests, ~1s
+npm test                 # ~480 tests, ~3s
 npm run typecheck
 cd android && JAVA_HOME=$HOME/.jdks/jdk-17.0.20+8/Contents/Home \
   ANDROID_HOME=/opt/homebrew/share/android-commandlinetools ./gradlew assembleRelease
@@ -141,6 +143,27 @@ quietly wrong.
   database.
 - **`RECEIVE_BOOT_COMPLETED` is required** by expo-task-manager's persisted
   jobs, or the first fix crashes the app.
+- **A closed route cleared the ground it enclosed.** The tracer kept only the
+  counter-clockwise outlines and threw the clockwise ones away — which are the
+  pockets of fog sealed inside a loop. Walk round a block and the whole block
+  opened. Ring counts could never see it; `fog/testing/oracle.ts` rasterises the
+  output and compares it to the bitmap cell by cell, and every geometry test that
+  matters goes through it.
+- **The fog is a MultiPolygon, cut into pieces, and built for the viewport.** One
+  polygon over the world with every hole in it breaks twice over: the native fill
+  path keeps only the 500 largest holes of a polygon and refuses more than 65 535
+  vertices, and building it all blocks the JS thread for seconds. So
+  `fogPartition.ts` cuts the world into a quadtree of squares down to single
+  tiles (no polygon holds more than one tile's holes), `view.ts` limits tracing to
+  what the map shows plus a margin and coarsens the grid as zoom falls (a block
+  clears if *any* cell in it is explored — never the other way round), and
+  everything outside is plain fog. `fill-antialias` is off on the layer because
+  antialiasing outlines every polygon edge, and neighbours share edges.
+- **`GeoJSONSource` runs `JSON.stringify` on its `data` on every render.** Pass a
+  string, made once per change (`ui/useFog.ts`).
+- **Two callers who arrive together both run the scan.** A cache of finished
+  answers does nothing for concurrent calls; `store/sharedRead.ts` caches the
+  promise instead.
 - **MapLibre RN v11 defaults Android to GLSurfaceView**, which renders the map
   mirrored on this device. Use `androidView="texture"`.
 - **`src/app/` collides with Expo Router's convention.** Hence `src/ui/`.
@@ -177,6 +200,13 @@ quietly wrong.
 - The timeline has no "newly opened area" per day — bitmaps carry no per-day
   provenance.
 - No permission-denied guidance screen, no disk-space check.
+- The viewport fog has never run on a device. Unchecked there: that the polygon
+  seams are invisible with `fill-antialias` off, that zooming out stays intact,
+  and how long the first fog takes. Until the map reports its view the whole
+  world is fog, so explored ground can be covered for a moment after launch or a
+  long pan. Native tile errors from the map are not surfaced anywhere.
+- Every fog change still reloads all tile BLOBs (`loadAllTiles`) and recomputes
+  the area; the viewport work only bounds tracing and rendering.
 - Published at https://github.com/waltwait/WorldTrace. `android/`, `docs/`,
   `credentials/` and `.env.local` are deliberately not in it, so a clone is not
   a complete backup of this machine.
