@@ -4,6 +4,7 @@
 
 import { distanceMeters } from '../geo/distance';
 import type { SqlDriver } from './driver';
+import { sharedReads } from './sharedRead';
 
 interface PointRow {
   segment_id: number;
@@ -26,7 +27,11 @@ export async function getPointsSignature(driver: SqlDriver): Promise<PointsSigna
   };
 }
 
-const distanceCache = new WeakMap<SqlDriver, { sig: PointsSignature; distance: number }>();
+export function samePointsSignature(a: PointsSignature, b: PointsSignature): boolean {
+  return a.count === b.count && a.lastTs === b.lastTs;
+}
+
+const distanceReads = sharedReads<PointsSignature, number>(samePointsSignature);
 
 /**
  * Ground covered, summed leg by leg.
@@ -40,25 +45,22 @@ export async function totalDistanceMeters(
   knownSig?: PointsSignature,
 ): Promise<number> {
   const sig = knownSig ?? (await getPointsSignature(driver));
-  const cached = distanceCache.get(driver);
-  if (cached && cached.sig.count === sig.count && cached.sig.lastTs === sig.lastTs) {
-    return cached.distance;
-  }
 
-  const points = await driver.all<PointRow>(
-    'SELECT segment_id, lat, lon FROM points ORDER BY segment_id, ts',
-  );
+  return distanceReads.get(driver, sig, async () => {
+    const points = await driver.all<PointRow>(
+      'SELECT segment_id, lat, lon FROM points ORDER BY segment_id, ts',
+    );
 
-  let total = 0;
-  let previous: PointRow | null = null;
+    let total = 0;
+    let previous: PointRow | null = null;
 
-  for (const point of points) {
-    if (previous !== null && previous.segment_id === point.segment_id) {
-      total += distanceMeters(previous, point);
+    for (const point of points) {
+      if (previous !== null && previous.segment_id === point.segment_id) {
+        total += distanceMeters(previous, point);
+      }
+      previous = point;
     }
-    previous = point;
-  }
 
-  distanceCache.set(driver, { sig, distance: total });
-  return total;
+    return total;
+  });
 }

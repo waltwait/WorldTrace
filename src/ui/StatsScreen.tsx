@@ -30,7 +30,13 @@ export const StatsScreen = memo(function StatsScreen({
   const [run, setRun] = useState(0);
   const wasActive = useRef(active);
 
+  // Only while this is the screen being looked at. The numbers move every few
+  // seconds on a walk, and rebuilding the summary reads the whole track; doing
+  // that behind another tab is work nobody sees. Coming back runs it again, and
+  // an unchanged summary comes straight from the cache.
   useEffect(() => {
+    if (!active) return;
+
     let cancelled = false;
 
     (async () => {
@@ -42,15 +48,25 @@ export const StatsScreen = memo(function StatsScreen({
     return () => {
       cancelled = true;
     };
-  }, [recorder.distanceMeters, recorder.exploredSquareMeters]);
+  }, [active, recorder.distanceMeters, recorder.exploredSquareMeters]);
 
-  // Every screen in this app stays mounted, so "on mount" would mean counting
-  // up unseen behind another tab. The bars and digits run when this screen
-  // becomes the one being looked at.
+  // Every screen in this app stays mounted once opened, so "on mount" would
+  // mean counting up unseen behind another tab. The bars and digits run when
+  // this screen becomes the one being looked at.
   useEffect(() => {
     if (active && !wasActive.current) setRun((n) => n + 1);
     wasActive.current = active;
   }, [active]);
+
+  // The first visit is the one that cannot rely on that: the screen is mounted
+  // already active, and its numbers only exist once the summary has loaded. Their
+  // arrival is the signal instead, given once.
+  const arrived = useRef(false);
+  useEffect(() => {
+    if (summary === null || arrived.current) return;
+    arrived.current = true;
+    if (active) setRun((n) => n + 1);
+  }, [summary, active]);
 
   if (!summary) {
     return (

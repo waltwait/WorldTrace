@@ -18,6 +18,7 @@ import { BackupScreen } from './src/ui/BackupScreen';
 import { DialogHost } from './src/ui/DialogHost';
 import { MapScreen } from './src/ui/MapScreen';
 import { CURVE, DURATION } from './src/ui/motion';
+import { openTab } from './src/ui/openedTabs';
 import { pageSlide } from './src/ui/slide';
 import { useReducedMotion } from './src/ui/useReducedMotion';
 import { StatsScreen } from './src/ui/StatsScreen';
@@ -132,6 +133,8 @@ export default function App() {
   const [prevIndex, setPrevIndex] = useState<number | null>(null);
   const [slideDir, setSlideDir] = useState<1 | -1>(1);
   const [highlighted, setHighlighted] = useState<Highlight | null>(null);
+  // Only the map exists at launch; see openedTabs.ts for why the rest wait.
+  const [opened, setOpened] = useState<ReadonlySet<number>>(() => new Set([0]));
 
   const { width } = useWindowDimensions();
   const [barWidth, setBarWidth] = useState(width);
@@ -154,6 +157,7 @@ export default function App() {
       const clamped = Math.max(0, Math.min(TABS.length - 1, next));
       if (clamped === current) return;
 
+      setOpened((tabs) => openTab(tabs, clamped));
       setSlideDir(clamped > current ? 1 : -1);
 
       if (reducedMotion) {
@@ -248,7 +252,7 @@ export default function App() {
           slideAnim={slideAnim}
           width={width}
         >
-          <StatsScreen recorder={recorder} active={index === 1} />
+          {opened.has(1) ? <StatsScreen recorder={recorder} active={index === 1} /> : null}
         </SlideScreen>
         <SlideScreen
           tabIndex={2}
@@ -258,7 +262,7 @@ export default function App() {
           slideAnim={slideAnim}
           width={width}
         >
-          <TimelineScreen onSelectDay={reviewDay} />
+          {opened.has(2) ? <TimelineScreen onSelectDay={reviewDay} /> : null}
         </SlideScreen>
         <SlideScreen
           tabIndex={3}
@@ -268,7 +272,7 @@ export default function App() {
           slideAnim={slideAnim}
           width={width}
         >
-          <BackupScreen />
+          {opened.has(3) ? <BackupScreen /> : null}
         </SlideScreen>
       </View>
 

@@ -8,7 +8,13 @@ import type { SqlDriver } from './driver';
 import { getFogTilesSignature, loadAllTiles, type FogTilesSignature } from './fogTiles';
 import { buildMilestones, type Milestones } from './milestones';
 import { countPlaces, type PlaceCounts } from './places';
-import { getPointsSignature, totalDistanceMeters, type PointsSignature } from './stats';
+import { sharedReads } from './sharedRead';
+import {
+  getPointsSignature,
+  samePointsSignature,
+  totalDistanceMeters,
+  type PointsSignature,
+} from './stats';
 
 /**
  * Totals, plus the personal bests the harder achievements are built on.
@@ -40,6 +46,24 @@ export function getCachedSummary(): Summary | null {
   return latestGlobalSummary;
 }
 
+interface SummarySignature {
+  fogSig: FogTilesSignature;
+  pointsSig: PointsSignature;
+}
+
+function sameFogSignature(a: FogTilesSignature, b: FogTilesSignature): boolean {
+  return a.count === b.count && a.lastUpdated === b.lastUpdated;
+}
+
+const summaryReads = sharedReads<SummarySignature, Summary>(
+  (a, b) => sameFogSignature(a.fogSig, b.fogSig) && samePointsSignature(a.pointsSig, b.pointsSig),
+);
+
+/**
+ * Asked for from several places at once — the stats screen, and anything else
+ * that wants the totals — so callers who arrive while a build is under way share
+ * it rather than each reading the tiles and the whole track again.
+ */
 export async function buildSummary(
   driver: SqlDriver,
   options?: { fogSig?: FogTilesSignature; pointsSig?: PointsSignature },
@@ -49,30 +73,25 @@ export async function buildSummary(
     options?.pointsSig ?? getPointsSignature(driver),
   ]);
 
+  return summaryReads.get(driver, { fogSig, pointsSig }, () =>
+    summarise(driver, fogSig, pointsSig),
+  );
+}
+
+async function summarise(
+  driver: SqlDriver,
+  fogSig: FogTilesSignature,
+  pointsSig: PointsSignature,
+): Promise<Summary> {
   const cached = summaryCache.get(driver);
-  if (
-    cached &&
-    cached.fogSig.count === fogSig.count &&
-    cached.fogSig.lastUpdated === fogSig.lastUpdated &&
-    cached.pointsSig.count === pointsSig.count &&
-    cached.pointsSig.lastTs === pointsSig.lastTs
-  ) {
-    return cached.summary;
-  }
 
   // Fog tiles: only reload all binary BLOBs and recalculate popcounts if tiles changed
-  const fogUnchanged =
-    cached &&
-    cached.fogSig.count === fogSig.count &&
-    cached.fogSig.lastUpdated === fogSig.lastUpdated;
+  const fogUnchanged = cached && sameFogSignature(cached.fogSig, fogSig);
 
   const tilesPromise = fogUnchanged ? null : loadAllTiles(driver);
 
   // Points: only re-query points and milestones if points changed
-  const pointsUnchanged =
-    cached &&
-    cached.pointsSig.count === pointsSig.count &&
-    cached.pointsSig.lastTs === pointsSig.lastTs;
+  const pointsUnchanged = cached && samePointsSignature(cached.pointsSig, pointsSig);
 
   const pointsQueries = pointsUnchanged
     ? null

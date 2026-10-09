@@ -13,7 +13,8 @@
 
 import { distanceMeters } from '../geo/distance';
 import type { SqlDriver } from './driver';
-import { getPointsSignature, type PointsSignature } from './stats';
+import { sharedReads } from './sharedRead';
+import { getPointsSignature, samePointsSignature, type PointsSignature } from './stats';
 
 export interface Milestones {
   /** Longest run of consecutive days with any track at all. */
@@ -60,28 +61,24 @@ function toLocalDayAndHour(ts: number): { day: string; hour: number } {
   };
 }
 
-const milestonesCache = new WeakMap<SqlDriver, { sig: PointsSignature; milestones: Milestones }>();
+const milestoneReads = sharedReads<PointsSignature, Milestones>(samePointsSignature);
 
 export async function buildMilestones(
   driver: SqlDriver,
   knownSig?: PointsSignature,
 ): Promise<Milestones> {
   const sig = knownSig ?? (await getPointsSignature(driver));
-  const cached = milestonesCache.get(driver);
-  if (cached && cached.sig.count === sig.count && cached.sig.lastTs === sig.lastTs) {
-    return cached.milestones;
-  }
+  return milestoneReads.get(driver, sig, () => readMilestones(driver));
+}
 
+async function readMilestones(driver: SqlDriver): Promise<Milestones> {
   const points = await driver.all<PointRow>(
     `SELECT segment_id, ts, lat, lon
        FROM points
       ORDER BY ts`,
   );
 
-  if (points.length === 0) {
-    milestonesCache.set(driver, { sig, milestones: { ...EMPTY } });
-    return { ...EMPTY };
-  }
+  if (points.length === 0) return { ...EMPTY };
 
   const start = points[0];
   const perDay = new Map<string, number>();
@@ -127,7 +124,6 @@ export async function buildMilestones(
     dawnDayCount: dawns.size,
   };
 
-  milestonesCache.set(driver, { sig, milestones: result });
   return result;
 }
 
