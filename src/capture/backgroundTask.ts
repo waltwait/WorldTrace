@@ -20,6 +20,7 @@ import { createExpoDriver } from '../store/expoDriver';
 import { migrate } from '../store/schema';
 import { createTracker, type Tracker } from '../store/tracker';
 import { readDeviceFlags } from './expoLocationSource';
+import { startRecordingTask } from './recordingStart';
 import { toFix } from './toFix';
 
 export const BACKGROUND_LOCATION_TASK = 'worldtrace-background-location';
@@ -101,20 +102,22 @@ export async function startBackgroundRecording(): Promise<void> {
     throw new LocationPermissionDenied('background');
   }
 
-  if (await Location.hasStartedLocationUpdatesAsync(BACKGROUND_LOCATION_TASK)) {
-    return;
-  }
-
-  await Location.startLocationUpdatesAsync(BACKGROUND_LOCATION_TASK, {
-    accuracy: Location.Accuracy.BestForNavigation,
-    distanceInterval: 10,
-    pausesUpdatesAutomatically: false,
-    showsBackgroundLocationIndicator: true,
-    foregroundService: {
-      notificationTitle: 'WorldTrace 記錄中',
-      notificationBody: '正在擦開你走過的迷霧',
-      notificationColor: '#0b1020',
-    },
+  // Registered every time, even when the task already runs; see recordingStart.ts
+  // for why "already running" must not end it here.
+  await startRecordingTask({
+    isStarted: () => Location.hasStartedLocationUpdatesAsync(BACKGROUND_LOCATION_TASK),
+    start: () =>
+      Location.startLocationUpdatesAsync(BACKGROUND_LOCATION_TASK, {
+        accuracy: Location.Accuracy.BestForNavigation,
+        distanceInterval: 10,
+        pausesUpdatesAutomatically: false,
+        showsBackgroundLocationIndicator: true,
+        foregroundService: {
+          notificationTitle: 'WorldTrace 記錄中',
+          notificationBody: '正在擦開你走過的迷霧',
+          notificationColor: '#0b1020',
+        },
+      }),
   });
 }
 
