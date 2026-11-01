@@ -27,22 +27,116 @@ export interface PlaceCounts {
 }
 
 /**
- * Explored tiles with no answer yet, newest ground first.
+ * How far from every named tile, in tiles, ground has to be to count as new at
+ * each step, widest first. About 35 km, 9 km and 2 km at the latitude of Taiwan.
+ */
+const NEW_GROUND = [64, 16, 4];
+
+/**
+ * Tiles bucketed in a grid, so "is anything within this distance" looks at nine
+ * cells rather than at every tile. The grid only speeds the question up; the
+ * answer is the distance.
+ */
+class Nearby {
+  private readonly cells = new Map<number, number[]>();
+
+  constructor(private readonly reach: number) {}
+
+  private cell(x: number, y: number): number {
+    return Math.floor(x / this.reach) * 65536 + Math.floor(y / this.reach);
+  }
+
+  add(tile: TileRef): void {
+    const key = this.cell(tile.x, tile.y);
+    const bucket = this.cells.get(key);
+    const packed = tile.x * 65536 + tile.y;
+
+    if (bucket) bucket.push(packed);
+    else this.cells.set(key, [packed]);
+  }
+
+  /** Whether any added tile is closer than `reach` tiles, in either direction. */
+  hasWithin(tile: TileRef): boolean {
+    const cx = Math.floor(tile.x / this.reach);
+    const cy = Math.floor(tile.y / this.reach);
+
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dy = -1; dy <= 1; dy++) {
+        const bucket = this.cells.get((cx + dx) * 65536 + (cy + dy));
+        if (!bucket) continue;
+
+        for (const packed of bucket) {
+          const x = Math.floor(packed / 65536);
+          const y = packed % 65536;
+          if (Math.max(Math.abs(x - tile.x), Math.abs(y - tile.y)) < this.reach) return true;
+        }
+      }
+    }
+
+    return false;
+  }
+}
+
+/**
+ * Explored tiles with no answer yet, new ground first.
  *
- * Newest first because where you have just been is what you want named. A tile
- * that resolved to nothing counts as answered — retrying it forever would spend
- * every pass on the same stretch of coast.
+ * Each pass names only a handful of tiles, so which ones matters more than how
+ * fast. What the counts want is the places nothing has been named near yet: a
+ * tile in a country not yet on the list says more than the thousandth tile of a
+ * city already known. So a tile with no named tile within 64 tiles of it comes
+ * first, then one with none within 16, then within 4, and the newest tile of
+ * each such stretch before any second one. A tile counts as named the moment it
+ * is chosen, so a pass spreads over new ground instead of piling onto one
+ * stretch of it. Once everything has an answer nearby, it is newest first.
+ *
+ * It used to be newest first throughout, by when a tile was last touched. A
+ * rebuild or a redraw refreshes that for swathes of old ground at once, so ground
+ * just walked in another country queued behind hundreds of tiles at home: fifty
+ * launches of twelve before the first foreign tile was named.
+ *
+ * A tile that resolved to nothing counts as answered — retrying it forever would
+ * spend every pass on the same stretch of coast.
  */
 export async function unresolvedTiles(driver: SqlDriver, limit: number): Promise<TileRef[]> {
-  return driver.all<TileRef>(
+  if (limit <= 0) return [];
+
+  const waiting = await driver.all<TileRef>(
     `SELECT f.x, f.y
        FROM fog_tiles f
        LEFT JOIN tile_places p ON p.z = f.z AND p.x = f.x AND p.y = f.y
       WHERE f.z = ? AND p.z IS NULL
-      ORDER BY f.updated_at DESC
-      LIMIT ?`,
-    [FOG_ZOOM, limit],
+      ORDER BY f.updated_at DESC`,
+    [FOG_ZOOM],
   );
+  if (waiting.length === 0) return [];
+
+  const named = await driver.all<TileRef>('SELECT x, y FROM tile_places WHERE z = ?', [FOG_ZOOM]);
+
+  const nearby = NEW_GROUND.map((reach) => new Nearby(reach));
+  const markNamed = (tile: TileRef) => nearby.forEach((grid) => grid.add(tile));
+  named.forEach(markNamed);
+
+  const chosen: TileRef[] = [];
+  const chosenKeys = new Set<number>();
+  const choose = (tile: TileRef) => {
+    chosen.push({ x: tile.x, y: tile.y });
+    chosenKeys.add(tile.x * 65536 + tile.y);
+    markNamed(tile);
+  };
+
+  for (let step = 0; step < NEW_GROUND.length && chosen.length < limit; step++) {
+    for (const tile of waiting) {
+      if (chosen.length >= limit) break;
+      if (!nearby[step].hasWithin(tile)) choose(tile);
+    }
+  }
+
+  for (const tile of waiting) {
+    if (chosen.length >= limit) break;
+    if (!chosenKeys.has(tile.x * 65536 + tile.y)) choose(tile);
+  }
+
+  return chosen;
 }
 
 export async function recordPlace(

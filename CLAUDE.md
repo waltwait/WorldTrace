@@ -173,6 +173,15 @@ quietly wrong.
   `ui/fogController.ts` asks the fog builder whether the fog already drawn still
   serves a report and leaves React alone if so; its tests pin that a thousand
   identical reports ask for nothing.
+- **Place naming went by when a tile was last touched, so a trip abroad queued
+  behind the ground at home.** Twelve tiles are named per launch, newest first —
+  but rebuilds and redraws refresh `updated_at` for swathes of old ground at once
+  (566 tiles in a day), so 91 Singapore tiles sat behind 596 tiles in Taiwan:
+  fifty launches before the first foreign tile was named, and "countries: 1" after
+  a three-day trip. Nothing was stuck and nothing was recorded wrong — the points
+  were all there. `unresolvedTiles` now takes ground with no named tile within 64
+  tiles first, then 16, then 4, one per stretch, and only then newest first.
+  Found by exporting the database from the phone and counting, not from the code.
 - **Two callers who arrive together both run the scan.** A cache of finished
   answers does nothing for concurrent calls; `store/sharedRead.ts` caches the
   promise instead.
