@@ -110,7 +110,6 @@ export const BackupScreen = memo(function BackupScreen() {
 
       <Action
         title="重畫歷史迷霧"
-        description="用目前的規則，把過去記錄過但沒被擦開的路重新畫一次。只會補上，不會擦掉任何已開的範圍。"
         busy={busy === 'rebuild'}
         disabled={busy !== null}
         onPress={() =>
@@ -145,7 +144,6 @@ export const BackupScreen = memo(function BackupScreen() {
         <>
           <Action
             title="匯出軌跡（GPX）"
-            description="給其他地圖軟體讀的標準格式。不含迷霧資料。"
             busy={busy === 'gpx'}
             disabled={busy !== null}
             onPress={() =>
@@ -159,7 +157,6 @@ export const BackupScreen = memo(function BackupScreen() {
 
           <Action
             title="匯出完整備份"
-            description="與雲端備份同一份檔案，改存到你自己選的地方。Google 帳號出事時的退路。"
             busy={busy === 'snapshot'}
             disabled={busy !== null}
             onPress={() =>
@@ -174,30 +171,6 @@ export const BackupScreen = memo(function BackupScreen() {
       ) : null}
 
       {lastResult ? <Text style={styles.result}>{lastResult}</Text> : null}
-
-      <View style={styles.note}>
-        <Text style={styles.noteTitle}>備份了什麼</Text>
-        <Text style={styles.noteBody}>
-          整個資料庫：每一筆通過驗證的定位、每一趟記錄的起訖，以及擦開的迷霧點陣圖 ——
-          最後這項是走不回來的，也是備份真正在保的東西。
-        </Text>
-      </View>
-
-      <View style={styles.note}>
-        <Text style={styles.noteTitle}>雲端備份存在哪裡</Text>
-        <Text style={styles.noteBody}>
-          存在你自己的 Google 雲端硬碟裡一個隱藏的應用程式資料夾。你在雲端硬碟的檔案列表中看不到它，
-          其他 App 也讀不到。WorldTrace 取得的權限只到這個資料夾為止 —— 它看不到你雲端硬碟裡的任何其他東西。
-        </Text>
-      </View>
-
-      <View style={styles.note}>
-        <Text style={styles.noteTitle}>為什麼不支援匯入 GPX</Text>
-        <Text style={styles.noteBody}>
-          WorldTrace 只記錄你真實抵達過的地方。一個檔案無法證明你去過哪裡，所以匯入是刻意不做的。
-          從雲端還原是另一回事 —— 那是你自己記錄的原樣搬回來。
-        </Text>
-      </View>
     </ScrollView>
   );
 });
@@ -229,10 +202,6 @@ function CloudPanel({
     return (
       <View style={styles.cloud}>
         <Text style={styles.cloudTitle}>尚未設定</Text>
-        <Text style={styles.cloudBody}>
-          這個版本還沒有內建 Google 用戶端 ID，所以無法登入。設定步驟在專案的
-          docs/google-drive-setup.md。
-        </Text>
       </View>
     );
   }
@@ -241,9 +210,6 @@ function CloudPanel({
     return (
       <View style={styles.cloud}>
         <Text style={styles.cloudTitle}>尚未連結</Text>
-        <Text style={styles.cloudBody}>
-          連結後，記錄會定期自動備份到你自己的雲端硬碟，換手機時可以直接還原。
-        </Text>
         <Primary label="連結 Google 帳號" busy={busy === 'connect'} disabled={busy !== null} onPress={onConnect} />
       </View>
     );
@@ -342,13 +308,11 @@ function Secondary({
 
 function Action({
   title,
-  description,
   busy,
   disabled,
   onPress,
 }: {
   title: string;
-  description: string;
   busy: boolean;
   disabled: boolean;
   onPress: () => void;
@@ -363,10 +327,7 @@ function Action({
       onPress={onPress}
       disabled={disabled}
     >
-      <View style={styles.actionText}>
-        <Text style={styles.actionTitle}>{title}</Text>
-        <Text style={styles.actionDescription}>{description}</Text>
-      </View>
+      <Text style={[styles.actionTitle, styles.actionText]}>{title}</Text>
       <Text style={styles.actionArrow}>{busy ? '…' : '›'}</Text>
     </Pressable>
   );
@@ -452,20 +413,9 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: theme.border,
   },
-  actionText: { flexShrink: 1, gap: 3, paddingRight: 12 },
+  actionText: { flexShrink: 1, paddingRight: 12 },
   actionTitle: { color: theme.text, fontSize: 15, fontWeight: '600' },
-  actionDescription: { color: theme.textFaint, fontSize: 11, lineHeight: 16 },
   actionArrow: { color: theme.accent, fontSize: 18 },
 
   result: { color: theme.live, fontSize: 11, fontVariant: ['tabular-nums'] },
-
-  note: {
-    padding: 14,
-    borderRadius: radius.card,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.border,
-    gap: 5,
-  },
-  noteTitle: { color: theme.textMuted, fontSize: 12, fontWeight: '600' },
-  noteBody: { color: theme.textFaint, fontSize: 11, lineHeight: 17 },
 });
