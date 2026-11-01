@@ -33,7 +33,7 @@ beforeEach(async () => {
 });
 
 const distanceScans = () =>
-  driver.queries.filter((sql) => /SELECT segment_id, lat, lon\s+FROM points/.test(sql)).length;
+  driver.queries.filter((sql) => /SELECT id, segment_id/.test(sql)).length;
 const milestoneScans = () =>
   driver.queries.filter((sql) => /SELECT segment_id, ts, lat, lon\s+FROM points/.test(sql)).length;
 

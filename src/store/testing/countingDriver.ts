@@ -11,12 +11,15 @@ import type { SqlDriver } from '../driver';
 export interface CountingDriver extends SqlDriver {
   /** Every statement issued, in order. */
   readonly queries: string[];
+  /** Rows handed back by all() and get() so far: what a scan actually cost. */
+  readonly rowsRead: number;
   /** Make the next read (all or get) fail once. */
   failNextRead(error: Error): void;
 }
 
 export function countingDriver(inner: SqlDriver): CountingDriver {
   const queries: string[] = [];
+  let rowsRead = 0;
   let pendingFailure: Error | null = null;
 
   const record = (sql: string) => {
@@ -33,6 +36,9 @@ export function countingDriver(inner: SqlDriver): CountingDriver {
 
   return {
     queries,
+    get rowsRead() {
+      return rowsRead;
+    },
     failNextRead(error) {
       pendingFailure = error;
     },
@@ -47,12 +53,16 @@ export function countingDriver(inner: SqlDriver): CountingDriver {
     async all<T>(sql: string, params?: Parameters<SqlDriver['all']>[1]) {
       record(sql);
       await maybeFail();
-      return inner.all<T>(sql, params);
+      const rows = await inner.all<T>(sql, params);
+      rowsRead += rows.length;
+      return rows;
     },
     async get<T>(sql: string, params?: Parameters<SqlDriver['get']>[1]) {
       record(sql);
       await maybeFail();
-      return inner.get<T>(sql, params);
+      const row = await inner.get<T>(sql, params);
+      if (row !== undefined) rowsRead += 1;
+      return row;
     },
     close: () => inner.close(),
   };
