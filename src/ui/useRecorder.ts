@@ -12,19 +12,17 @@ import {
   LocationPermissionDenied,
   startBackgroundRecording,
 } from '../capture/backgroundTask';
-import { runRecorderLoop } from './recorderLoop';
-import { exploredSquareMeters } from '../fog/area';
 import type { TileBitmap } from '../fog/geojson';
 import { database } from '../store/database';
 import type { SqlDriver } from '../store/driver';
+import type { RejectionSummary } from '../store/fogTiles';
+import { runRecorderLoop } from './recorderLoop';
 import {
-  getFogTilesSignature,
-  loadAllTiles,
-  recentRejections,
-  type FogTilesSignature,
-  type RejectionSummary,
-} from '../store/fogTiles';
-import { getPointsSignature, totalDistanceMeters, type PointsSignature } from '../store/stats';
+  readSnapshot,
+  sameRejections,
+  type CacheState,
+  type RecorderSnapshot,
+} from './recorderSnapshot';
 
 export type RecorderStatus = 'starting' | 'recording' | 'denied' | 'failed';
 
@@ -40,68 +38,6 @@ export interface RecorderState {
 }
 
 const REFRESH_INTERVAL_MS = 3000;
-const REJECTION_WINDOW_MS = 24 * 60 * 60 * 1000;
-
-interface CacheState {
-  fogSignature: FogTilesSignature | null;
-  pointsSignature: PointsSignature | null;
-  tiles: TileBitmap[];
-  exploredSquareMeters: number;
-  distanceMeters: number;
-}
-
-function sameRejections(a: RejectionSummary[], b: RejectionSummary[]): boolean {
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) {
-    if (a[i].reason !== b[i].reason || a[i].count !== b[i].count || a[i].lastAt !== b[i].lastAt) {
-      return false;
-    }
-  }
-  return true;
-}
-
-async function readSnapshot(driver: SqlDriver, cache: CacheState) {
-  const [fogSig, pointsSig, rejections] = await Promise.all([
-    getFogTilesSignature(driver),
-    getPointsSignature(driver),
-    recentRejections(driver, Date.now() - REJECTION_WINDOW_MS),
-  ]);
-
-  let tiles = cache.tiles;
-  let explored = cache.exploredSquareMeters;
-  let distanceMeters = cache.distanceMeters;
-
-  // Only reload all tile BLOBs and recalculate popcounts if tiles actually changed.
-  if (
-    cache.fogSignature === null ||
-    cache.fogSignature.count !== fogSig.count ||
-    cache.fogSignature.lastUpdated !== fogSig.lastUpdated
-  ) {
-    tiles = await loadAllTiles(driver);
-    explored = exploredSquareMeters(tiles);
-    cache.fogSignature = fogSig;
-    cache.tiles = tiles;
-    cache.exploredSquareMeters = explored;
-  }
-
-  // Only recompute total distance if points actually changed.
-  if (
-    cache.pointsSignature === null ||
-    cache.pointsSignature.count !== pointsSig.count ||
-    cache.pointsSignature.lastTs !== pointsSig.lastTs
-  ) {
-    distanceMeters = await totalDistanceMeters(driver, pointsSig);
-    cache.pointsSignature = pointsSig;
-    cache.distanceMeters = distanceMeters;
-  }
-
-  return {
-    tiles,
-    rejections,
-    distanceMeters,
-    exploredSquareMeters: explored,
-  };
-}
 
 export function useRecorder(): RecorderState {
   const [status, setStatus] = useState<RecorderStatus>('starting');
@@ -126,10 +62,10 @@ export function useRecorder(): RecorderState {
   useEffect(() => {
     // Recording continues after the screen goes away — that is the entire point
     // of the background task — so stopping only stops this screen listening.
-    const loop = runRecorderLoop({
+    const loop = runRecorderLoop<SqlDriver, RecorderSnapshot>({
       open: database,
       start: startBackgroundRecording,
-      read: (driver) => readSnapshot(driver, cacheRef.current),
+      read: (driver, onPartial) => readSnapshot(driver, cacheRef.current, onPartial),
       isDenied: (error) => error instanceof LocationPermissionDenied,
       onSnapshot: (snapshot) =>
         setData((prev) => {

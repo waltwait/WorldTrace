@@ -21,7 +21,7 @@ export interface RecorderLoopDeps<Driver, Snapshot> {
   open(): Promise<Driver>;
   /** Start background recording. Rejects if it cannot. */
   start(): Promise<void>;
-  read(driver: Driver): Promise<Snapshot>;
+  read(driver: Driver, onPartial?: (snapshot: Snapshot) => void): Promise<Snapshot>;
   /** Whether a start failure is the user declining location permission. */
   isDenied(error: unknown): boolean;
   onSnapshot(snapshot: Snapshot): void;
@@ -47,7 +47,9 @@ export function runRecorderLoop<Driver, Snapshot>(
 
     reading = true;
     try {
-      const snapshot = await deps.read(driver);
+      const snapshot = await deps.read(driver, (partial) => {
+        if (!stopped) deps.onSnapshot(partial);
+      });
       if (!stopped) deps.onSnapshot(snapshot);
     } finally {
       reading = false;

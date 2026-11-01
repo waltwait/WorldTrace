@@ -251,4 +251,24 @@ describe('runRecorderLoop', () => {
 
     expect(read).toHaveBeenCalledTimes(1);
   });
+
+  test('delivers a partial snapshot before the full read finishes', async () => {
+    const full = deferred<string>();
+    const { deps, snapshots } = setup({
+      read: async (_driver, onPartial) => {
+        onPartial?.('partial');
+        return full.promise;
+      },
+    });
+
+    runRecorderLoop(deps);
+    await flush();
+
+    expect(snapshots).toEqual(['partial']);
+
+    full.resolve('full');
+    await flush();
+
+    expect(snapshots).toEqual(['partial', 'full']);
+  });
 });
