@@ -148,7 +148,7 @@ describe('createFogController', () => {
   });
 
   describe('while the map is moving', () => {
-    it('asks for a redraw once the zoom crosses into a finer grain', () => {
+    it('asks for a redraw once zooming in needs a finer grain than was drawn', () => {
       const { controller, ground, here, redraws } = setup();
       controller.fogFor(ground);
       controller.view({ ...here, zoom: 10 }, false);
@@ -160,24 +160,64 @@ describe('createFogController', () => {
       expect(redraws()).toBe(asked + 1);
     });
 
+    // Every redraw hands the map new fog and makes it start its tiles again. A
+    // pinch asks for a great many: a map made to start over that often never gets
+    // as far as drawing the tiles the new zoom needs, and blank is no fog.
     it('asks no more often than the least gap, however fast the reports come', () => {
       const { controller, ground, here, redraws, advance } = setup();
       controller.fogFor(ground);
-      controller.view({ ...here, zoom: 10 }, false);
+      controller.view({ ...here, zoom: 8 }, false);
       controller.fogFor(ground);
       const asked = redraws();
 
-      controller.view({ ...here, zoom: 15 }, true);
+      controller.view({ ...here, zoom: 10 }, true);
       controller.fogFor(ground);
-      controller.view({ ...here, zoom: 12 }, true);
-      controller.view({ ...here, zoom: 11 }, true);
+      expect(redraws()).toBe(asked + 1);
 
+      controller.view({ ...here, zoom: 11.5 }, true);
+      controller.view({ ...here, zoom: 12.5 }, true);
       expect(redraws()).toBe(asked + 1);
 
       advance(MOVING_REDRAW_GAP_MS);
-      controller.view({ ...here, zoom: 11 }, true);
-
+      controller.view({ ...here, zoom: 12.5 }, true);
       expect(redraws()).toBe(asked + 2);
+    });
+
+    it('leaves the fog alone while zooming out, however far and fast, and redraws once, when it stops', () => {
+      const { controller, ground, redraws, advance } = setup();
+      const street = mapView(HERE.x, HERE.y, HERE.x + 1, HERE.y, 16);
+      controller.fogFor(ground);
+      controller.view(street, false);
+      controller.fogFor(ground);
+      const asked = redraws();
+
+      // From the street out to a whole region in a couple of seconds.
+      for (const [zoom, reach] of [
+        [14, 4],
+        [12, 12],
+        [10, 40],
+        [8, 160],
+      ] as const) {
+        advance(MOVING_REDRAW_GAP_MS);
+        controller.view(mapView(HERE.x - reach, HERE.y - reach, HERE.x + reach, HERE.y + reach, zoom), true);
+      }
+      expect(redraws()).toBe(asked);
+
+      controller.view(mapView(HERE.x - 160, HERE.y - 160, HERE.x + 160, HERE.y + 160, 8), false);
+      expect(redraws()).toBe(asked + 1);
+    });
+
+    it('does redraw for a drag to ground the fine detail is not on', () => {
+      const { controller, ground, here, redraws, advance } = setup();
+      controller.fogFor(ground);
+      controller.view(here, false);
+      controller.fogFor(ground);
+      const asked = redraws();
+
+      advance(MOVING_REDRAW_GAP_MS);
+      controller.view(mapView(HERE.x + 40, HERE.y, HERE.x + 41, HERE.y), true);
+
+      expect(redraws()).toBe(asked + 1);
     });
 
     it('does not hold back the report that says the map has stopped', () => {

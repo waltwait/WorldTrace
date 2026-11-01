@@ -18,8 +18,12 @@ import type { MultiPolygonFeature, TileBitmap } from '../fog/geojson';
 import { viewFromMap } from '../fog/view';
 import type { FogView } from '../fog/view';
 
-/** Least time between redraws asked for by a map that is still moving. */
-export const MOVING_REDRAW_GAP_MS = 250;
+/**
+ * Least time between redraws asked for by a map that is still moving. Every
+ * redraw makes the map start its tiles again, so this is as much about leaving it
+ * time to finish them as about saving work.
+ */
+export const MOVING_REDRAW_GAP_MS = 500;
 
 export interface MapViewState {
   bounds: readonly number[];
@@ -58,12 +62,19 @@ export function createFogController(deps: {
       // — new tiles, say — draws for where the map is now.
       latest = next;
 
-      if (redrawOnItsWay || builder.isCurrent(tiles, next)) return;
+      if (redrawOnItsWay) return;
 
       if (moving) {
+        // Out of date is not enough to interrupt a gesture: only fog that looks
+        // wrong is, and zooming out never does. The rest waits for the map to
+        // stop, and is then drawn once.
+        if (!builder.isUrgent(tiles, next)) return;
+
         const at = deps.now();
         if (at - lastMovingRequest < MOVING_REDRAW_GAP_MS) return;
         lastMovingRequest = at;
+      } else if (builder.isCurrent(tiles, next)) {
+        return;
       }
 
       redrawOnItsWay = true;

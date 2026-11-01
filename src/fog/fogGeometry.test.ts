@@ -118,34 +118,82 @@ describe('createFogBuilder', () => {
       ).toEqual([]);
     });
 
-    it('leaves explored ground well out of view under fog, to be drawn when it comes into view', () => {
-      const faraway = tile(HERE.x + 4000, HERE.y + 1000, [[10, 10], [11, 10]]);
-      const fog = createFogBuilder().build([...tiles, faraway], view);
-
-      const [lon, lat] = cellCentre(faraway.x, faraway.y, 10, 10);
-      expect(coverCount(polygonsOf(fog), lon, lat)).toBe(1);
-    });
-
-    it('does not trace tiles that are out of view', () => {
-      const builder = createFogBuilder();
-      builder.build(
-        [
-          ...tiles,
-          tile(HERE.x + 4000, HERE.y + 1000, [[10, 10]]),
-          tile(HERE.x - 900, HERE.y, [[1, 1]]),
-        ],
-        view,
-      );
-
-      expect(builder.size).toBe(2);
-    });
-
     it('draws tiles just outside the screen, so a small drag does not meet fog', () => {
       const beside = tile(HERE.x + 2, HERE.y, [[10, 10]]);
       const fog = createFogBuilder().build([...tiles, beside], view);
 
       const [lon, lat] = cellCentre(beside.x, beside.y, 10, 10);
       expect(coverCount(polygonsOf(fog), lon, lat)).toBe(0);
+    });
+  });
+
+  /**
+   * Zoom out fast and the screen soon shows ground that was nowhere near it a
+   * moment ago. Drawn only for what was on screen, that ground was fog until the
+   * fog had been built again — the tracks vanished and came back — and a fast
+   * pinch outruns the rebuild. So all of the history is always drawn, and what is
+   * out of view is drawn coarsely: cheap enough to keep, and fine enough for the
+   * zoom it will next be seen at.
+   */
+  describe('ground beyond the screen', () => {
+    const faraway = () => tile(HERE.x + 4000, HERE.y + 1000, [[10, 10], [11, 10]]);
+
+    it('is drawn, not left under fog, so it is already there when the map zooms out', () => {
+      const away = faraway();
+      const fog = createFogBuilder().build([...tiles, away], view);
+
+      const [lon, lat] = cellCentre(away.x, away.y, 10, 10);
+      expect(coverCount(polygonsOf(fog), lon, lat)).toBe(0);
+    });
+
+    it('is drawn coarsely: a block clears if any cell in it is explored', () => {
+      const away = faraway();
+      const fog = createFogBuilder().build([...tiles, away], view);
+
+      // (12, 12) shares a block with the explored (10, 10) at the far grain.
+      const [lon, lat] = cellCentre(away.x, away.y, 12, 12);
+      expect(coverCount(polygonsOf(fog), lon, lat)).toBe(0);
+    });
+
+    it('never hides a cell that was explored, however far away', () => {
+      let seed = 5;
+      const random = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 2 ** 32);
+      const bits: Array<[number, number]> = [];
+      for (let i = 0; i < 300; i++) bits.push([Math.floor(random() * 128), Math.floor(random() * 128)]);
+      const away = tile(HERE.x - 3000, HERE.y + 2500, bits);
+
+      const fog = createFogBuilder().build([...tiles, away], view);
+
+      const hidden = bits.filter(([bx, by]) => {
+        const [lon, lat] = cellCentre(away.x, away.y, bx, by);
+        return coverCount(polygonsOf(fog), lon, lat) > 0;
+      });
+      expect(hidden).toEqual([]);
+    });
+
+    it('costs far less than the same ground in full, which is why all of it can be kept', () => {
+      let seed = 11;
+      const random = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 2 ** 32);
+      const bits: Array<[number, number]> = [];
+      for (let i = 0; i < 600; i++) bits.push([Math.floor(random() * 128), Math.floor(random() * 128)]);
+      const away = tile(HERE.x + 2500, HERE.y - 2500, bits);
+
+      const nearFog = createFogBuilder().build(
+        [away],
+        viewOf(away.x, away.y, away.x, away.y),
+      );
+      const farFog = createFogBuilder().build([away], view);
+
+      expect(JSON.stringify(farFog).length * 4).toBeLessThan(JSON.stringify(nearFog).length);
+    });
+
+    it('is kept for every tile of a long history, not only for the ones in view', () => {
+      const builder = createFogBuilder();
+      const history = Array.from({ length: 40 }, (_, i) => tile(HERE.x + 500 + i * 37, HERE.y - 700 + i * 11, [[5, 5]]));
+
+      builder.build([...tiles, ...history], view);
+
+      expect(builder.size).toBe(tiles.length + history.length);
     });
   });
 
@@ -217,6 +265,97 @@ describe('createFogBuilder', () => {
    * towards the middle of the screen, so the tiles there are kept at full
    * detail already: nothing is left to catch up with when the zoom arrives.
    */
+  /**
+   * Handing the map a new set of fog makes it throw away the tiles it has and make
+   * them again, and a fast pinch asks for the whole redraw several times over. A
+   * map that is made to start again every quarter of a second never gets as far as
+   * drawing the tiles the new zoom needs: they stay blank, and blank is no fog. In
+   * a recording of a fast zoom-out the fog was gone from everywhere but a small
+   * box round the user and had not come back a second after the pinch ended.
+   *
+   * So a redraw is only worth interrupting a gesture for when leaving things as
+   * they are would look wrong. Zooming out never does: all of the history is
+   * already drawn and it is finer than the zoom needs. Zooming in does, and so
+   * does dragging somewhere the fine detail is not.
+   */
+  describe('a redraw that cannot wait for the map to stop', () => {
+    const ground = [tile(HERE.x, HERE.y, [[4, 4]]), tile(HERE.x + 1, HERE.y, [[9, 9]])];
+    const street = viewOf(HERE.x, HERE.y, HERE.x + 1, HERE.y, 16);
+
+    const built = (at = street) => {
+      const builder = createFogBuilder();
+      builder.build(ground, at);
+      return builder;
+    };
+
+    it('is due before anything has been drawn, for a view that makes sense', () => {
+      expect(createFogBuilder().isUrgent(ground, street)).toBe(true);
+    });
+
+    it('is not due while there is no view to draw for', () => {
+      expect(createFogBuilder().isUrgent(ground, null)).toBe(false);
+    });
+
+    it('is not due for the view that was just drawn', () => {
+      expect(built().isUrgent(ground, street)).toBe(false);
+    });
+
+    it('is not due while zooming out, even once the screen shows far more than was drawn', () => {
+      const builder = built();
+
+      const out = viewOf(HERE.x - 40, HERE.y - 40, HERE.x + 40, HERE.y + 40, 10);
+      expect(builder.isCurrent(ground, out)).toBe(false);
+      expect(builder.isUrgent(ground, out)).toBe(false);
+    });
+
+    it('is not due while zooming out by less than a level either', () => {
+      const builder = built();
+
+      expect(builder.isUrgent(ground, { ...street, zoom: 15.4 })).toBe(false);
+    });
+
+    it('is due when zooming in needs a finer grain than was drawn', () => {
+      const builder = built({ ...street, zoom: 10 });
+
+      expect(builder.isUrgent(ground, { ...street, zoom: 13.5 })).toBe(true);
+    });
+
+    it('is due when the view has been dragged out of what was drawn', () => {
+      const builder = built();
+
+      expect(builder.isUrgent(ground, viewOf(HERE.x + 30, HERE.y, HERE.x + 31, HERE.y, 16))).toBe(true);
+    });
+
+    it('is not due for new tiles, which can show a moment late', () => {
+      const builder = built();
+      const again = reread(ground);
+
+      expect(builder.isCurrent(again, street)).toBe(false);
+      expect(builder.isUrgent(again, street)).toBe(false);
+    });
+
+    it('is never due when nothing needs drawing', () => {
+      const builder = built();
+
+      for (const v of [street, { ...street, west: street.west + 1e-5 }, { ...street, zoom: 17 }]) {
+        if (builder.isCurrent(ground, v)) expect(builder.isUrgent(ground, v)).toBe(false);
+      }
+    });
+
+    it('is no more eager than a plain redraw: whatever is urgent is also not current', () => {
+      const builder = built({ ...street, zoom: 10 });
+
+      for (const v of [
+        street,
+        { ...street, zoom: 12 },
+        { ...street, zoom: 10 },
+        viewOf(HERE.x + 30, HERE.y, HERE.x + 31, HERE.y, 10),
+      ]) {
+        if (builder.isUrgent(ground, v)) expect(builder.isCurrent(ground, v)).toBe(false);
+      }
+    });
+  });
+
   describe('keeping detail where a zoom is about to land', () => {
     // Zoom 10 traces in blocks of 16 cells, so (12, 12) shares a block with (4, 4).
     const walked = (x: number, y: number) => tile(x, y, [[4, 4]]);
@@ -468,21 +607,31 @@ describe('createFogBuilder', () => {
 
     it('keeps what it traced when the view moves on, so coming back costs nothing', () => {
       const builder = createFogBuilder();
-      const far = [tile(HERE.x + 30, HERE.y, [[10, 10]])];
-      const all = [...tiles, ...far];
-      builder.build(all, view);
-      builder.build(all, viewOf(HERE.x + 30, HERE.y, HERE.x + 30, HERE.y));
+      const faraway = tile(HERE.x + 30, HERE.y, [[10, 10]]);
+      const all = [...tiles, faraway];
 
-      expect(builder.size).toBe(3);
+      const first = builder.build(all, view);
+      builder.build(all, viewOf(HERE.x + 30, HERE.y, HERE.x + 30, HERE.y));
+      const back = builder.build(all, view);
+
+      // The rings are the very objects made the first time: nothing was traced
+      // again, though every tile changed grain twice in between.
+      const before = ringsOf(first);
+      const after = ringsOf(back);
+      expect(after.length).toBeGreaterThan(0);
+      for (const ring of after) expect(before).toContain(ring);
     });
 
-    it('stops remembering past its limit, keeping what the last build used', () => {
-      const builder = createFogBuilder(3);
+    it('stops remembering the fine detail of ground the view has left, past its limit', () => {
+      const limit = 2;
+      const builder = createFogBuilder(limit);
       const many = Array.from({ length: 6 }, (_, i) => tile(HERE.x + i * 50, HERE.y, [[1, 1]]));
 
       for (const t of many) {
         builder.build(many, viewOf(t.x, t.y, t.x, t.y));
-        expect(builder.size).toBeLessThanOrEqual(3);
+        // Every tile is drawn each time, once; the limit is on what is kept
+        // beyond that.
+        expect(builder.size).toBeLessThanOrEqual(many.length + limit);
       }
 
       const last = many[many.length - 1];
@@ -490,5 +639,6 @@ describe('createFogBuilder', () => {
       const [lon, lat] = cellCentre(last.x, last.y, 1, 1);
       expect(coverCount(polygonsOf(fog), lon, lat)).toBe(0);
     });
+
   });
 });

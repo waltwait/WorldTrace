@@ -51,6 +51,17 @@ export interface FogBuilder {
    * instead of only once the map has come to rest.
    */
   isCurrent(tiles: TileBitmap[], view: FogView | null): boolean;
+  /**
+   * Whether the fog already drawn looks wrong for `view`, as opposed to merely
+   * being out of date: too coarse for a zoom that has gone in, or missing the
+   * detail where the map has been dragged to. Zooming out is never urgent — the
+   * whole history is already drawn, finer than the zoom needs — and new tiles are
+   * not either, since they can show a moment late. Only an urgent redraw is worth
+   * interrupting a gesture for: handing the map new fog makes it throw away its
+   * tiles and make them again, and a map made to start over every quarter of a
+   * second never gets as far as drawing the tiles the new zoom needs.
+   */
+  isUrgent(tiles: TileBitmap[], view: FogView | null): boolean;
   /** Tiles currently remembered. Exposed so tests can see the cache is bounded. */
   readonly size: number;
 }
@@ -79,6 +90,34 @@ export const HOT_TILES = 36;
 const HOT_RADIUS = 3;
 const HOT_DRIFT = 2;
 
+/**
+ * Ground out of view is drawn too, coarsely, rather than left under fog until
+ * the map gets there. Zoom out fast and the screen soon shows ground that was
+ * nowhere near it a moment ago; drawn only for what was on screen, it was fog
+ * until the fog had been built again, so the tracks vanished and came back, and
+ * a fast pinch outruns the rebuild.
+ *
+ * Out of view it is traced with blocks of at least FAR_MIN_SCALE cells, and
+ * otherwise as coarse as the map would draw it FAR_ZOOM_DROP zoom levels out.
+ * That keeps the whole history to a few MB however much of it there is, and it
+ * is fine enough for the zooms it will be seen at next: blocky for the moment
+ * it takes the redraw to catch up, never missing.
+ */
+const FAR_MIN_SCALE = 16;
+
+/** How far a zoom may fall before it counts as a zoom out and not as a wobble. */
+const ZOOM_OUT_TOLERANCE = 0.05;
+const FAR_ZOOM_DROP = 4;
+
+/**
+ * One cache entry per tile and per grid it was traced on, so ground that moves
+ * from near to far and back is not traced again each time. A scale is a power
+ * of two up to 128, so its exponent is a number from 0 to 7.
+ */
+function entryKey(tileKey: number, scale: number): number {
+  return tileKey * 8 + Math.log2(scale);
+}
+
 const WORLD_OF_FOG = fogOf(partitionFog([]));
 
 function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
@@ -94,6 +133,8 @@ interface Drawn {
   fog: MultiPolygonFeature;
   tiles: TileBitmap[] | null;
   scale: number;
+  /** The zoom it was drawn for, to tell a zoom out from a drag. */
+  zoom: number;
   range: TileRange | null;
   /** Where the full-detail tiles were gathered round; null when all are full detail. */
   centre: { x: number; y: number } | null;
@@ -135,12 +176,32 @@ export function createFogBuilder(remembered: number = REMEMBERED_TILES): FogBuil
       return servedBy(tiles, view) !== null;
     },
 
+    isUrgent(tiles: TileBitmap[], view: FogView | null): boolean {
+      if (!isUsableView(view)) return false;
+      if (!drawn) return true;
+      if (servedBy(tiles, view) !== null) return false;
+
+      // Blank, or drawn for no view at all: anything is better than that.
+      if (drawn.range === null) return true;
+
+      // Zoomed in past the grain the fog was drawn at: it would show as blocks.
+      if (scaleForZoom(view.zoom) < drawn.scale) return true;
+
+      // Dragged out of what was drawn. Zooming out also takes the view out of it,
+      // but then the far ground is there to be seen; only a drag, or a zoom in,
+      // finds the fine detail missing.
+      const zoomedOut = view.zoom < drawn.zoom - ZOOM_OUT_TOLERANCE;
+      if (!zoomedOut && !rangeContains(drawn.range, tileRangeOf(view))) return true;
+
+      return false;
+    },
+
     build(tiles: TileBitmap[], view: FogView | null): MultiPolygonFeature {
       const current = servedBy(tiles, view);
       if (current) return current;
 
       if (!isUsableView(view)) {
-        drawn = { fog: WORLD_OF_FOG, tiles: null, scale: 1, range: null, centre: null };
+        drawn = { fog: WORLD_OF_FOG, tiles: null, scale: 1, zoom: 0, range: null, centre: null };
         return WORLD_OF_FOG;
       }
 
@@ -156,12 +217,15 @@ export function createFogBuilder(remembered: number = REMEMBERED_TILES): FogBuil
       const next = new Map<number, Traced>();
       const present = new Set<number>();
       const inRange: TileBitmap[] = [];
+      const beyond: TileBitmap[] = [];
 
       for (const tile of tiles) {
         present.add(tile.x * GRID_TILES + tile.y);
 
         if (tile.x >= range.x0 && tile.x <= range.x1 && tile.y >= range.y0 && tile.y <= range.y1) {
           inRange.push(tile);
+        } else {
+          beyond.push(tile);
         }
       }
 
@@ -187,13 +251,12 @@ export function createFogBuilder(remembered: number = REMEMBERED_TILES): FogBuil
 
       const live: LiveTile[] = [];
 
-      for (const tile of inRange) {
-        const key = tile.x * GRID_TILES + tile.y;
-        const grain = detailed.has(key) ? 1 : scale;
+      const draw = (tile: TileBitmap, grain: number) => {
+        const key = entryKey(tile.x * GRID_TILES + tile.y, grain);
 
         const previous = traced.get(key);
         const entry =
-          previous && previous.scale === grain && sameBytes(previous.bitmap, tile.bitmap)
+          previous && sameBytes(previous.bitmap, tile.bitmap)
             ? previous
             : {
                 bitmap: tile.bitmap,
@@ -203,21 +266,32 @@ export function createFogBuilder(remembered: number = REMEMBERED_TILES): FogBuil
 
         next.set(key, entry);
         if (entry.trace.outlines.length > 0) live.push({ x: tile.x, y: tile.y, trace: entry.trace });
+      };
+
+      for (const tile of inRange) {
+        draw(tile, detailed.has(tile.x * GRID_TILES + tile.y) ? 1 : scale);
       }
+
+      const farScale = Math.min(
+        128,
+        Math.max(FAR_MIN_SCALE, scale, scaleForZoom(view.zoom - FAR_ZOOM_DROP)),
+      );
+      for (const tile of beyond) draw(tile, farScale);
 
       // What was traced earlier and is still on the ground stays, up to the
       // limit, so panning back to a place just left does not trace it again. A
       // tile that has gone — a restore from a smaller backup, say — is dropped
       // so it cannot leave its rings behind.
+      const used = next.size;
       for (const [key, entry] of traced) {
-        if (next.size >= remembered) break;
-        if (!next.has(key) && present.has(key)) next.set(key, entry);
+        if (next.size - used >= remembered) break;
+        if (!next.has(key) && present.has(Math.floor(key / 8))) next.set(key, entry);
       }
 
       traced = next;
 
       const fog = fogOf(partitionFog(live));
-      drawn = { fog, tiles, scale, range, centre };
+      drawn = { fog, tiles, scale, zoom: view.zoom, range, centre };
       return fog;
     },
   };
