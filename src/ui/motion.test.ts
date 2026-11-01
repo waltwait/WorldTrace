@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { barTransform, countUpValue, staggerDelay, STAGGER } from './motion';
+import {
+  barTransform,
+  countUpValue,
+  DURATION,
+  PRESS_SCALE,
+  sameShown,
+  shouldCount,
+  staggerDelay,
+  STAGGER,
+  SWAP_OFFSET,
+} from './motion';
 
 describe('staggerDelay', () => {
   it('walks the first few items apart', () => {
@@ -64,5 +74,89 @@ describe('countUpValue', () => {
 
   it('counts downwards too', () => {
     expect(countUpValue(20, 10, 0.5)).toBe(15);
+  });
+});
+
+describe('press feedback', () => {
+  // Press feedback should be felt, not seen: past about 0.96 the control visibly
+  // collapses and the eye goes to the shrinking instead of to what it did.
+  it('shrinks a control only a little', () => {
+    expect(PRESS_SCALE).toBeGreaterThanOrEqual(0.96);
+    expect(PRESS_SCALE).toBeLessThan(1);
+    expect(PRESS_SCALE).toBeLessThanOrEqual(0.98);
+  });
+
+  it('lets go slower than it grabbed, which was instant', () => {
+    expect(DURATION.press).toBeGreaterThan(0);
+    expect(DURATION.press).toBeLessThanOrEqual(200);
+  });
+});
+
+describe('text swap', () => {
+  it('goes out faster than it comes in', () => {
+    expect(DURATION.swapOut).toBeLessThan(DURATION.swapIn);
+  });
+
+  // The old text leaves and the new arrives one after the other, and both are on
+  // the button the user is looking at: the pair has to be over before they have
+  // time to wonder.
+  it('is over inside 300 ms, both halves together', () => {
+    expect(DURATION.swapOut + DURATION.swapIn).toBeLessThan(300);
+  });
+
+  it('moves only a few points, enough to read as a change and no more', () => {
+    expect(SWAP_OFFSET).toBeGreaterThan(0);
+    expect(SWAP_OFFSET).toBeLessThanOrEqual(8);
+  });
+});
+
+describe('sameShown', () => {
+  const area = (value: number) => `${value.toFixed(2)} km²`;
+
+  // A number on the map moves with every few metres walked, but it is shown to
+  // two decimals. Counting up between two values that read the same would run
+  // the JS thread for half a second to move nothing the eye can see.
+  it('is true when two values read the same once formatted', () => {
+    expect(sameShown(70.0201, 70.0249, area)).toBe(true);
+  });
+
+  it('is false when the reading changes', () => {
+    expect(sameShown(70.02, 70.03, area)).toBe(false);
+  });
+
+  it('is decided by the formatter, not by the raw values', () => {
+    expect(sameShown(1, 2, () => 'same')).toBe(true);
+    expect(sameShown(1, 1, (value) => String(value + Math.random()))).toBe(false);
+  });
+});
+
+describe('shouldCount', () => {
+  const area = (value: number) => `${value.toFixed(2)} km²`;
+
+  it('counts when the value moves and the reading changes', () => {
+    expect(shouldCount({ from: 70.02, to: 70.5, arriving: false, format: area })).toBe(true);
+  });
+
+  it('does not count when nothing moves', () => {
+    expect(shouldCount({ from: 70.02, to: 70.02, arriving: false, format: area })).toBe(false);
+  });
+
+  it('does not count a change that reads the same', () => {
+    expect(shouldCount({ from: 70.021, to: 70.024, arriving: false, format: area })).toBe(false);
+  });
+
+  // The map's number starts at zero before anything has loaded and then jumps to
+  // the real figure. Counting up from nothing there would replay at every launch,
+  // at the moment the JS thread is busiest and for no reason the user gave.
+  it('does not count up from zero unless the screen is being arrived at', () => {
+    expect(shouldCount({ from: 0, to: 70.02, arriving: false, format: area })).toBe(false);
+  });
+
+  it('does count up from zero on arriving, which is what the stats screen wants', () => {
+    expect(shouldCount({ from: 0, to: 70.02, arriving: true, format: area })).toBe(true);
+  });
+
+  it('still carries on from a nonzero value that is not an arrival', () => {
+    expect(shouldCount({ from: 12.5, to: 13, arriving: false, format: area })).toBe(true);
   });
 });

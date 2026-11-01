@@ -14,6 +14,7 @@ import { compareToLandmark, formatEarthShare } from './earth';
 import { FadeIn } from './FadeIn';
 import { DURATION } from './motion';
 import { formatArea, formatDistance } from './format';
+import { RollingNumber } from './RollingNumber';
 import { radius, theme } from './theme';
 import { useFog } from './useFog';
 import type { RecorderState } from './useRecorder';
@@ -105,8 +106,9 @@ export const MapScreen = memo(function MapScreen({
         />
         <UserLocation />
 
-        {/* maxzoom=18 keeps deep street-level clarity while keeping vector
-            tile generation lightning fast so fog tracks user pinch zooms instantaneously.
+        {/* maxzoom matches the camera's own limit. Stopping fog tiles at 11 and
+            drawing them enlarged beyond it was tried and did nothing for the
+            flash of unfogged map on a fast zoom out; see CLAUDE.md.
             tolerance=0 prevents Douglas-Peucker simplification from collapsing holes.
 
             fill-antialias is off because the fog is cut into many neighbouring
@@ -161,13 +163,22 @@ export const MapScreen = memo(function MapScreen({
 
         <View style={styles.stats}>
           <View style={styles.primary}>
-            <Text style={styles.primaryValue}>
-              {formatArea(recorder.exploredSquareMeters)}
-            </Text>
+            <RollingNumber
+              value={recorder.exploredSquareMeters}
+              format={formatArea}
+              run={0}
+              style={styles.primaryValue}
+              fit
+            />
             <Text style={styles.label}>已探索</Text>
           </View>
           <View style={styles.secondary}>
-            <Text style={styles.secondaryValue}>{formatDistance(recorder.distanceMeters)}</Text>
+            <RollingNumber
+              value={recorder.distanceMeters}
+              format={formatDistance}
+              run={0}
+              style={styles.secondaryValue}
+            />
             <Text style={styles.label}>走過</Text>
           </View>
         </View>

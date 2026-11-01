@@ -8,10 +8,17 @@ import {
   restoreFromCloud,
   type CloudStatus,
 } from '../cloud/cloudBackup';
-import { exportGpx, exportSnapshot, share } from '../export/backup';
+import { discardExport, exportGpx, exportSnapshot, share, type ExportResult } from '../export/backup';
+import { folderLabel, type ExportMode, type ExportSettings, DEFAULT_EXPORT_SETTINGS } from '../export/exportSettings';
+import { createFolderPort } from '../export/folderPort';
+import { saveToFolder } from '../export/saveToFolder';
+import { loadExportSettings, saveExportSettings } from '../export/settingsFile';
 import { database } from '../store/database';
 import { rebuildFog } from '../store/rebuild';
 import { buildSummary } from '../store/summary';
+import { ActionButton } from './ActionButton';
+import { PressScale } from './PressScale';
+import type { ActionResult } from './actionState';
 import { formatArea } from './format';
 import { ask } from './dialog';
 import { radius, theme } from './theme';
@@ -20,9 +27,20 @@ type Busy = 'gpx' | 'snapshot' | 'connect' | 'upload' | 'restore' | 'status' | '
 
 export const BackupScreen = memo(function BackupScreen() {
   const [busy, setBusy] = useState<Busy>(null);
-  const [lastResult, setLastResult] = useState<string | null>(null);
   const [cloud, setCloud] = useState<CloudStatus | null>(null);
   const [exportsOpen, setExportsOpen] = useState(false);
+  const [exportSettings, setExportSettings] = useState<ExportSettings>(DEFAULT_EXPORT_SETTINGS);
+
+  useEffect(() => {
+    void loadExportSettings().then(setExportSettings);
+  }, []);
+
+  const changeExportSettings = useCallback((next: ExportSettings) => {
+    setExportSettings(next);
+    void saveExportSettings(next).catch(() => {
+      // Not being able to remember a choice must not get in the way of making it.
+    });
+  }, []);
 
   const refresh = useCallback(async () => {
     setCloud(await loadCloudStatus(await database()));
@@ -32,25 +50,33 @@ export const BackupScreen = memo(function BackupScreen() {
     void refresh();
   }, [refresh]);
 
-  /** Runs an action, keeping one place responsible for spinners and errors. */
-  async function run(kind: Exclude<Busy, null>, action: () => Promise<string | null>) {
+  /**
+   * Runs an action, keeping one place responsible for what happens when it
+   * fails. What it says on success goes back to the button that was tapped,
+   * which shows it there; `busy` only keeps the other buttons from starting
+   * something at the same time.
+   */
+  async function run(
+    kind: Exclude<Busy, null>,
+    action: () => Promise<string | null>,
+  ): Promise<ActionResult> {
     setBusy(kind);
     try {
-      const message = await action();
-      if (message !== null) setLastResult(message);
+      return { ok: true, message: await action() };
     } catch (error) {
       await ask({
         title: '操作失敗',
         message: error instanceof Error ? error.message : String(error),
         confirmLabel: '好',
       });
+      return { ok: false };
     } finally {
       setBusy(null);
     }
   }
 
-  async function confirmRestore() {
-    const confirmed = await ask({
+  const askToRestore = () =>
+    ask({
       title: '從雲端還原',
       message:
         '這會用雲端上的備份覆蓋這台裝置目前的所有記錄。還原後必須手動重新啟動 App。\n\n' +
@@ -60,9 +86,8 @@ export const BackupScreen = memo(function BackupScreen() {
       destructive: true,
     });
 
-    if (!confirmed) return;
-
-    await run('restore', async () => {
+  const restore = () =>
+    run('restore', async () => {
       await restoreFromCloud(await database());
       await ask({
         title: '還原完成',
@@ -72,6 +97,42 @@ export const BackupScreen = memo(function BackupScreen() {
       await refresh();
       return null;
     });
+
+  /**
+   * Put a finished export where the user wants it: handed to the share sheet, or
+   * saved into the folder they chose. What it returns is what the button says.
+   */
+  async function deliver(result: ExportResult): Promise<string | null> {
+    if (exportSettings.mode === 'share') {
+      await share(result);
+      return `${result.fileName} · ${formatBytes(result.bytes)}`;
+    }
+
+    // The copy in the cache is only a stop on the way: whatever happens, it goes.
+    try {
+      const saved = await saveToFolder(
+        createFolderPort(() =>
+          ask({
+            title: '選擇存放位置',
+            message: '選「下載」裡的資料夾，可以按「新增資料夾」建立一個，例如 WorldTrace。之後都會存到那裡。',
+            confirmLabel: '選擇資料夾',
+            cancelLabel: '取消',
+          }),
+        ),
+        exportSettings.folderUri,
+        result,
+      );
+
+      if (!saved.saved) return null;
+
+      if (saved.folderUri !== exportSettings.folderUri) {
+        changeExportSettings({ ...exportSettings, folderUri: saved.folderUri });
+      }
+
+      return `已存到 ${folderLabel(saved.folderUri)} · ${formatBytes(result.bytes)}`;
+    } finally {
+      discardExport(result);
+    }
   }
 
   return (
@@ -83,7 +144,7 @@ export const BackupScreen = memo(function BackupScreen() {
         status={cloud}
         busy={busy}
         onConnect={() =>
-          void run('connect', async () => {
+          run('connect', async () => {
             const account = await connect();
             await refresh();
             return account === null ? null : `已連結 ${account.email}`;
@@ -93,27 +154,28 @@ export const BackupScreen = memo(function BackupScreen() {
           void run('connect', async () => {
             await disconnect();
             await refresh();
-            return '已中斷連結，雲端上的備份仍保留';
+            return null;
           })
         }
         onBackUp={() =>
-          void run('upload', async () => {
+          run('upload', async () => {
             const remote = await backUpNow(await database());
             await refresh();
             return `已上傳 · ${formatBytes(remote.bytes)}`;
           })
         }
-        onRestore={() => void confirmRestore()}
+        askToRestore={askToRestore}
+        onRestore={restore}
       />
 
       <Text style={styles.sectionLabel}>迷霧</Text>
 
-      <Action
-        title="重畫歷史迷霧"
-        busy={busy === 'rebuild'}
+      <ActionButton
+        variant="row"
+        label="重畫歷史迷霧"
         disabled={busy !== null}
         onPress={() =>
-          void run('rebuild', async () => {
+          run('rebuild', async () => {
             const driver = await database();
             const before = (await buildSummary(driver)).exploredSquareMeters;
             const result = await rebuildFog(driver);
@@ -142,35 +204,34 @@ export const BackupScreen = memo(function BackupScreen() {
 
       {exportsOpen ? (
         <>
-          <Action
-            title="匯出軌跡（GPX）"
-            busy={busy === 'gpx'}
+          <ModeSwitch
+            mode={exportSettings.mode}
+            onChange={(mode) => changeExportSettings({ ...exportSettings, mode })}
+          />
+
+          <ActionButton
+            variant="row"
+            label="匯出軌跡（GPX）"
             disabled={busy !== null}
             onPress={() =>
-              void run('gpx', async () => {
-                const result = await exportGpx(await database());
-                await share(result);
-                return `${result.fileName} · ${formatBytes(result.bytes)}`;
+              run('gpx', async () => {
+                return deliver(await exportGpx(await database()));
               })
             }
           />
 
-          <Action
-            title="匯出完整備份"
-            busy={busy === 'snapshot'}
+          <ActionButton
+            variant="row"
+            label="匯出完整備份"
             disabled={busy !== null}
             onPress={() =>
-              void run('snapshot', async () => {
-                const result = await exportSnapshot(await database());
-                await share(result);
-                return `${result.fileName} · ${formatBytes(result.bytes)}`;
+              run('snapshot', async () => {
+                return deliver(await exportSnapshot(await database()));
               })
             }
           />
         </>
       ) : null}
-
-      {lastResult ? <Text style={styles.result}>{lastResult}</Text> : null}
     </ScrollView>
   );
 });
@@ -181,14 +242,16 @@ function CloudPanel({
   onConnect,
   onDisconnect,
   onBackUp,
+  askToRestore,
   onRestore,
 }: {
   status: CloudStatus | null;
   busy: Busy;
-  onConnect: () => void;
+  onConnect: () => Promise<ActionResult>;
   onDisconnect: () => void;
-  onBackUp: () => void;
-  onRestore: () => void;
+  onBackUp: () => Promise<ActionResult>;
+  askToRestore: () => Promise<boolean>;
+  onRestore: () => Promise<ActionResult>;
 }) {
   if (status === null) {
     return (
@@ -210,7 +273,7 @@ function CloudPanel({
     return (
       <View style={styles.cloud}>
         <Text style={styles.cloudTitle}>尚未連結</Text>
-        <Primary label="連結 Google 帳號" busy={busy === 'connect'} disabled={busy !== null} onPress={onConnect} />
+        <ActionButton variant="primary" label="連結 Google 帳號" disabled={busy !== null} onPress={onConnect} />
       </View>
     );
   }
@@ -233,11 +296,12 @@ function CloudPanel({
       </Text>
 
       <View style={styles.cloudActions}>
-        <Primary label="立即備份" busy={busy === 'upload'} disabled={busy !== null} onPress={onBackUp} />
-        <Secondary
+        <ActionButton variant="primary" label="立即備份" disabled={busy !== null} onPress={onBackUp} />
+        <ActionButton
+          variant="secondary"
           label="從雲端還原"
-          busy={busy === 'restore'}
           disabled={busy !== null || status.remote === null}
+          confirm={askToRestore}
           onPress={onRestore}
         />
       </View>
@@ -254,82 +318,25 @@ function CloudPanel({
   );
 }
 
-function Primary({
-  label,
-  busy,
-  disabled,
-  onPress,
-}: {
-  label: string;
-  busy: boolean;
-  disabled: boolean;
-  onPress: () => void;
-}) {
-  return (
-    <Pressable
-      style={({ pressed }) => [
-        styles.primary,
-        disabled && styles.faded,
-        pressed && !disabled && { opacity: 0.8 },
-      ]}
-      onPress={onPress}
-      disabled={disabled}
-    >
-      <Text style={styles.primaryText}>{busy ? '處理中…' : label}</Text>
-    </Pressable>
-  );
-}
+function ModeSwitch({ mode, onChange }: { mode: ExportMode; onChange: (mode: ExportMode) => void }) {
+  const choices: Array<{ mode: ExportMode; label: string }> = [
+    { mode: 'share', label: '分享' },
+    { mode: 'save', label: '存到手機' },
+  ];
 
-function Secondary({
-  label,
-  busy,
-  disabled,
-  onPress,
-}: {
-  label: string;
-  busy: boolean;
-  disabled: boolean;
-  onPress: () => void;
-}) {
   return (
-    <Pressable
-      style={({ pressed }) => [
-        styles.secondary,
-        disabled && styles.faded,
-        pressed && !disabled && { opacity: 0.8 },
-      ]}
-      onPress={onPress}
-      disabled={disabled}
-    >
-      <Text style={styles.secondaryText}>{busy ? '處理中…' : label}</Text>
-    </Pressable>
-  );
-}
-
-function Action({
-  title,
-  busy,
-  disabled,
-  onPress,
-}: {
-  title: string;
-  busy: boolean;
-  disabled: boolean;
-  onPress: () => void;
-}) {
-  return (
-    <Pressable
-      style={({ pressed }) => [
-        styles.action,
-        disabled && !busy && styles.faded,
-        pressed && !disabled && { opacity: 0.7 },
-      ]}
-      onPress={onPress}
-      disabled={disabled}
-    >
-      <Text style={[styles.actionTitle, styles.actionText]}>{title}</Text>
-      <Text style={styles.actionArrow}>{busy ? '…' : '›'}</Text>
-    </Pressable>
+    <View style={styles.modeSwitch}>
+      {choices.map((choice) => (
+        <PressScale
+          key={choice.mode}
+          containerStyle={styles.modeSegmentSlot}
+          style={[styles.modeSegment, mode === choice.mode && styles.modeSegmentOn]}
+          onPress={() => onChange(choice.mode)}
+        >
+          <Text style={[styles.modeText, mode === choice.mode && styles.modeTextOn]}>{choice.label}</Text>
+        </PressScale>
+      ))}
+    </View>
   );
 }
 
@@ -368,6 +375,22 @@ const styles = StyleSheet.create({
   disclosureText: { color: theme.textFaint, fontSize: 11, letterSpacing: 1 },
   disclosureChevron: { color: theme.textFaint, fontSize: 13 },
 
+  modeSwitch: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  modeSegmentSlot: { flexGrow: 1, flexBasis: 0 },
+  modeSegment: {
+    paddingVertical: 9,
+    borderRadius: radius.card,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.border,
+    alignItems: 'center',
+  },
+  modeSegmentOn: { backgroundColor: theme.surfaceSolid, borderColor: theme.accent },
+  modeText: { color: theme.textFaint, fontSize: 12, fontWeight: '600' },
+  modeTextOn: { color: theme.text },
+
   cloud: {
     padding: 16,
     borderRadius: radius.card,
@@ -383,39 +406,4 @@ const styles = StyleSheet.create({
   cloudBody: { color: theme.textFaint, fontSize: 11, lineHeight: 17 },
   cloudActions: { flexDirection: 'row', gap: 10 },
   unlink: { color: theme.textFaint, fontSize: 11, textDecorationLine: 'underline' },
-
-  primary: {
-    flexGrow: 1,
-    paddingVertical: 11,
-    borderRadius: radius.card,
-    backgroundColor: theme.accent,
-    alignItems: 'center',
-  },
-  primaryText: { color: '#04101f', fontSize: 13, fontWeight: '700' },
-  secondary: {
-    flexGrow: 1,
-    paddingVertical: 11,
-    borderRadius: radius.card,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.border,
-    alignItems: 'center',
-  },
-  secondaryText: { color: theme.textMuted, fontSize: 13, fontWeight: '600' },
-  faded: { opacity: 0.45 },
-
-  action: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    padding: 16,
-    borderRadius: radius.card,
-    backgroundColor: theme.surfaceSolid,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.border,
-  },
-  actionText: { flexShrink: 1, paddingRight: 12 },
-  actionTitle: { color: theme.text, fontSize: 15, fontWeight: '600' },
-  actionArrow: { color: theme.accent, fontSize: 18 },
-
-  result: { color: theme.live, fontSize: 11, fontVariant: ['tabular-nums'] },
 });

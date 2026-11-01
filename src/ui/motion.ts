@@ -22,7 +22,22 @@ export const DURATION = {
   bar: 420,
   /** Digits counting up. */
   count: 520,
+  /** A pressed control coming back up. Going down is instant. */
+  press: 160,
+  /** Old text leaving a button. Quick: the user's eye is already on the new one. */
+  swapOut: 90,
+  /** New text arriving. */
+  swapIn: 140,
 } as const;
+
+/**
+ * How far a pressed control shrinks. Felt, not seen: past about 0.96 it visibly
+ * collapses and draws the eye to the shrinking rather than to what it did.
+ */
+export const PRESS_SCALE = 0.97;
+
+/** How far text travels as it swaps, in points. Enough to read as a change. */
+export const SWAP_OFFSET = 4;
 
 /** Cubic-bezier control points, for Easing.bezier. */
 export const CURVE = {
@@ -72,4 +87,37 @@ export function barTransform(trackWidth: number, progress: number): BarTransform
 export function countUpValue(from: number, to: number, t: number): number {
   const clamped = Math.min(Math.max(t, 0), 1);
   return from + (to - from) * clamped;
+}
+
+/**
+ * Whether two values read the same once formatted — in which case counting from
+ * one to the other would run the JS thread for the length of an animation to
+ * move nothing anyone can see. A number on the map changes with every few
+ * metres walked but is shown to two decimals.
+ */
+export function sameShown(from: number, to: number, format: (value: number) => string): boolean {
+  return format(from) === format(to);
+}
+
+/**
+ * Whether a number should count from `from` to `to`, or just be the new value.
+ *
+ * It counts only for a change that shows. And it does not count up from zero
+ * unless the screen is being arrived at: a number that sits at zero before
+ * anything has loaded and then becomes the real figure has not "grown", it has
+ * been filled in, and counting it up would replay at every launch.
+ */
+export function shouldCount(change: {
+  from: number;
+  to: number;
+  arriving: boolean;
+  format: (value: number) => string;
+}): boolean {
+  const { from, to, arriving, format } = change;
+
+  if (from === to) return false;
+  if (sameShown(from, to, format)) return false;
+  if (from === 0 && !arriving) return false;
+
+  return true;
 }

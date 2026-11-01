@@ -154,16 +154,23 @@ quietly wrong.
   path keeps only the 500 largest holes of a polygon and refuses more than 65 535
   vertices, and building it all blocks the JS thread for seconds. So
   `fogPartition.ts` cuts the world into a quadtree of squares down to single
-  tiles (no polygon holds more than one tile's holes), `view.ts` limits tracing to
-  what the map shows plus a margin and coarsens the grid as zoom falls (a block
-  clears if *any* cell in it is explored — never the other way round), and
-  everything outside is plain fog. Tiles around the middle of the view keep full
+  tiles (no polygon holds more than one tile's holes), `view.ts` limits full
+  tracing to what the map shows plus a margin and coarsens the grid as zoom falls
+  (a block clears if *any* cell in it is explored — never the other way round).
+  Everything outside is **not** left as fog: it is drawn too, in blocks of at
+  least 16 cells (`FAR_MIN_SCALE`), so zooming out finds the whole history already
+  there. Left as fog it vanished until the redraw landed, and a fast pinch
+  outruns the redraw. Tiles around the middle of the view keep full
   detail whatever the zoom (`HOT_TILES`): a fast zoom-in otherwise magnifies the
   coarse blocks into bright patches of ground that was never walked, until the
-  redraw lands. The fog is redrawn *while the map is moving*
-  (`onRegionIsChanging`, when a zoom crosses into a finer grain or a drag leaves
-  what was drawn), not only when it settles — otherwise zooming in shows the
-  coarse fog for as long as the redraw takes. `fill-antialias` is off on the layer because
+  redraw lands. The fog is redrawn mid-gesture only
+  when leaving it alone would look wrong — a zoom *in* needing a finer grain, a
+  drag out of what was drawn (`FogBuilder.isUrgent`) — never for a zoom out, and
+  at most every 500 ms. Handing the map new fog makes it throw its tiles away and
+  start again, and a map made to do that every quarter of a second never gets as
+  far as drawing the tiles the new zoom needs: in a recording of a fast zoom-out
+  the fog was gone from everywhere but a small box round the user, and still
+  missing a second after the pinch ended. Blank is not fog. `fill-antialias` is off on the layer because
   antialiasing outlines every polygon edge, and neighbours share edges.
 - **`GeoJSONSource` runs `JSON.stringify` on its `data` on every render.** Pass a
   string, made once per change (`ui/useFog.ts`).
@@ -173,6 +180,20 @@ quietly wrong.
   `ui/fogController.ts` asks the fog builder whether the fog already drawn still
   serves a report and leaves React alone if so; its tests pin that a thousand
   identical reports ask for nothing.
+- **Background recording ran without its foreground service, so the system kept
+  killing the process.** Android only lets an app start a foreground service while
+  it is in front, and a task the OS has saved across a restart comes back in the
+  background: expo-location refused the service (logcat: "Foreground location task
+  cannot be started while the app is in the background!"), the process sat cached,
+  and the system killed it for memory again and again (`dumpsys activity exit-info
+  com.worldtrace.app`: `importance=400`, `LOW_MEMORY`). `startBackgroundRecording`
+  then found the task already running and returned, so opening the app never asked
+  for the service again. `capture/recordingStart.ts` registers the task on every
+  launch, which restarts the service while the app is in front. After a swipe-away
+  or a reboot the OS still brings the process back unprotected until the app is
+  opened; the "WorldTrace 記錄中" notification is how to tell. Check with
+  `adb shell dumpsys activity services com.worldtrace.app` (a `LocationTaskService`
+  with `isForeground=true`) and `dumpsys notification --noredact`.
 - **Place naming went by when a tile was last touched, so a trip abroad queued
   behind the ground at home.** Twelve tiles are named per launch, newest first —
   but rebuilds and redraws refresh `updated_at` for swathes of old ground at once
@@ -208,6 +229,23 @@ quietly wrong.
   the number must agree.
 - The map stays north-up (`trackUserLocation="default"`). A rotating fog map is
   much harder to read.
+- Exports can be shared or saved to a folder (`export/saveToFolder.ts`). Android
+  will not let an app write to Downloads itself, only to a folder the user picked
+  inside it, once, through the system picker; the app keeps the grant. The choice
+  is kept in `export-settings.json` beside the database, not in it: a restore
+  replaces the database, and a folder grant belongs to this install.
+- A tapped action answers on the button that was tapped, not in a corner of the
+  screen. `ui/ActionButton.tsx` shows a spinner while the work runs and then the
+  result in place; what it shows when is `ui/actionState.ts`, which is tested
+  with injected timers: busy only after 120 ms (a faster action would just
+  flash), kept up 400 ms once shown, a confirmation held 2.2 s. A failure is
+  reported by a dialog, never by the button.
+- Motion is `transform` and `opacity` on the native driver, and nothing else
+  (`PressScale`, `SwapText`). Redrawing the fog holds the JS thread for seconds,
+  and anything driven from JS freezes mid-press while it runs. `RollingNumber`
+  is the one exception — text cannot be driven natively — so it only runs for a
+  change that shows in the formatted text and never counts up from zero unless
+  the screen is being arrived at (`shouldCount`).
 
 ## Known gaps
 
@@ -221,11 +259,23 @@ quietly wrong.
 - The timeline has no "newly opened area" per day — bitmaps carry no per-day
   provenance.
 - No permission-denied guidance screen, no disk-space check.
-- Zooming out, tracks beyond what was last drawn are missing until the redraw
-  lands (a fraction of a second), and a patch of newly exposed map can show
-  without fog for a moment while the native side makes its tiles. Both were seen
-  on the phone; neither is fixable from JS. Native tile errors from the map are
+- A fast zoom out shows newly exposed map without fog until the native side has
+  cut tiles for the new zoom — large patches mid-pinch, all fogged about 0.25 s
+  after the pinch stops (screen recording, 2026-11-01). Tried, and no help:
+  coarsening the far ring (the fog JSON shrinks by 0–30%; its floor is one
+  polygon per explored tile, not the grain) and capping the fog source's
+  `maxzoom` at 11 (the flash shows at whole-island zooms, beyond the cap). What
+  would fix it by construction is a dark base map with walked ground lit on top,
+  since MapLibre cannot cut holes in a layer below — but walked ground would then
+  show a tinted dark map, not the real one. Native tile errors from the map are
   not surfaced anywhere — logcat shows none.
+- Saving an export to a folder (`folderPort.ts`) has passed its tests but has not
+  been tried on the phone: the system picker, the write into a document folder
+  and whether the file keeps its name and extension are all the part a test
+  cannot reach.
+- The press, busy and confirmation animations on the backup page and the
+  timeline have passed their tests and bundle cleanly but have not been watched
+  running on the phone.
 - Every fog change still reloads all tile BLOBs (`loadAllTiles`) and recomputes
   the area; the viewport work only bounds tracing and rendering.
 - Published at https://github.com/waltwait/WorldTrace. `android/`, `docs/`,

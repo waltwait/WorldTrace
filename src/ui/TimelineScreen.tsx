@@ -1,10 +1,11 @@
 import { memo, useCallback, useEffect, useState } from 'react';
-import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, FlatList, StyleSheet, Text, View } from 'react-native';
 import type { TrackSegment } from '../export/gpx';
 import { database } from '../store/database';
 import { getCachedDays, listDays, loadTrack, type TrackDay } from '../store/track';
 import { FadeIn } from './FadeIn';
 import { staggerDelay } from './motion';
+import { PressScale } from './PressScale';
 import { radius, theme } from './theme';
 
 export interface TimelineScreenProps {
@@ -47,18 +48,21 @@ export const TimelineScreen = memo(function TimelineScreen({ onSelectDay }: Time
   const renderDay = useCallback(
     ({ item: day, index }: { item: TrackDay; index: number }) => {
       const row = (
-        <Pressable
-          style={({ pressed }) => [styles.day, pressed && { opacity: 0.7 }]}
-          onPress={() => void open(day)}
-        >
+        <PressScale style={styles.day} onPress={() => void open(day)}>
           <View style={styles.dayText}>
             <Text style={styles.dayDate}>{day.date}</Text>
             <Text style={styles.dayMeta}>
               {day.pointCount} 個定位點 · {formatSpan(day.from, day.to)}
             </Text>
           </View>
-          <Text style={styles.chevron}>{busy === day.date ? '…' : '在地圖上看 ›'}</Text>
-        </Pressable>
+          <View style={styles.dayEnd}>
+            {busy === day.date ? (
+              <ActivityIndicator size="small" color={theme.accent} />
+            ) : (
+              <Text style={styles.chevron}>在地圖上看 ›</Text>
+            )}
+          </View>
+        </PressScale>
       );
 
       // Only the first screenful arrives with a flourish. Rows further down are
@@ -143,5 +147,8 @@ const styles = StyleSheet.create({
     fontVariant: ['tabular-nums'],
   },
   dayMeta: { color: theme.textFaint, fontSize: 11, fontVariant: ['tabular-nums'] },
+  // The same width whether it holds the words or the spinner, so the row does not
+  // change shape when a day is tapped.
+  dayEnd: { minWidth: 76, height: 20, alignItems: 'flex-end', justifyContent: 'center' },
   chevron: { color: theme.accent, fontSize: 12 },
 });

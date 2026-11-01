@@ -80,6 +80,15 @@ export async function exportSnapshot(driver: SqlDriver): Promise<ExportResult> {
   return { uri: destination.uri, fileName, bytes: destination.size ?? 0 };
 }
 
+/**
+ * Remove an export from the cache once it has been put somewhere else. A full
+ * backup is a whole copy of the database; left behind, every save would add one.
+ */
+export function discardExport(result: ExportResult): void {
+  const file = new File(result.uri);
+  if (file.exists) file.delete();
+}
+
 /** Hand a file to the system share sheet. */
 export async function share(result: ExportResult): Promise<void> {
   if (!(await Sharing.isAvailableAsync())) {

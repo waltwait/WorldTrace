@@ -1,0 +1,95 @@
+/**
+ * A number that counts to its value.
+ *
+ * Shared by the stats screen, where the numbers arrive with the screen, and the
+ * map's panel, where they creep up as ground is cleared. Only a change that
+ * shows in the formatted text is animated.
+ */
+
+import { useEffect, useRef, useState } from 'react';
+import { Animated, Easing, Text, type StyleProp, type TextStyle } from 'react-native';
+import { countUpValue, CURVE, DURATION, shouldCount } from './motion';
+import { useReducedMotion } from './useReducedMotion';
+
+/**
+ * A number that counts to its value.
+ *
+ * Text content cannot be driven natively, so this one does run on the JS
+ * thread — which is why it is its own component. Only this Text re-renders per
+ * frame, not the screen holding it, and only four numbers on the screen use it.
+ */
+export function RollingNumber({
+  value,
+  format,
+  run,
+  style,
+  fit = false,
+}: {
+  value: number;
+  format: (value: number) => string;
+  run: number;
+  style: StyleProp<TextStyle>;
+  fit?: boolean;
+}) {
+  const reduced = useReducedMotion();
+  const [shown, setShown] = useState(value);
+  const shownRef = useRef(value);
+  const runRef = useRef(run);
+  const progress = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    const arriving = runRef.current !== run;
+    runRef.current = run;
+
+    // Arriving on the screen counts up from nothing; a value that moved while
+    // the screen was already open carries on from where the digits stood.
+    const from = arriving ? 0 : shownRef.current;
+
+    const settle = () => {
+      shownRef.current = value;
+      setShown(value);
+    };
+
+    // Nothing to see, or nothing that was earned by arriving: no animation, and
+    // no JS thread time spent making one.
+    if (reduced || !shouldCount({ from, to: value, arriving, format })) {
+      settle();
+      return;
+    }
+
+    progress.setValue(0);
+    const listener = progress.addListener(({ value: t }) => {
+      const next = countUpValue(from, value, t);
+      shownRef.current = next;
+      setShown(next);
+    });
+
+    const animation = Animated.timing(progress, {
+      toValue: 1,
+      duration: DURATION.count,
+      delay: arriving ? DURATION.page : 0,
+      easing: Easing.bezier(...CURVE.enter),
+      useNativeDriver: false,
+    });
+
+    animation.start(({ finished }) => {
+      if (finished) settle();
+    });
+
+    return () => {
+      animation.stop();
+      progress.removeListener(listener);
+    };
+  }, [value, run, reduced, progress]);
+
+  return (
+    <Text
+      style={style}
+      numberOfLines={1}
+      adjustsFontSizeToFit={fit}
+      minimumFontScale={fit ? 0.6 : undefined}
+    >
+      {format(shown)}
+    </Text>
+  );
+}
