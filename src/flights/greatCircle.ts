@@ -103,6 +103,18 @@ export function buildGreatCircleArc(
     coords.push(vectorToLatLon(interpolated));
   }
 
+  // atan2 gives longitudes in [-180, 180], so an arc over the Pacific jumps
+  // from 180 to -180 halfway and the map joins the two with a line across
+  // the whole world. Keep each point within 180° of the one before; a line
+  // past 180 is how MapLibre is told to cross the date line.
+  for (let i = 1; i < coords.length; i++) {
+    const prev = coords[i - 1][0];
+    let lon = coords[i][0];
+    while (lon - prev > 180) lon -= 360;
+    while (lon - prev < -180) lon += 360;
+    coords[i][0] = lon;
+  }
+
   return coords;
 }
 
@@ -170,4 +182,16 @@ export function buildFlightArcsGeoJson(
     type: 'FeatureCollection',
     features,
   };
+}
+
+/**
+ * What the drawn arcs depend on, as one string. The map re-reads flights
+ * each time it comes into view, and handing MapLibre a new source makes it
+ * throw its tiles away and start again — so the arcs are rebuilt only when
+ * this changes, not when a gate or a status does.
+ */
+export function routesKey(
+  flights: ReadonlyArray<{ id: string; depIata: string; arrIata: string }>,
+): string {
+  return flights.map((f) => `${f.id}:${f.depIata}-${f.arrIata}`).join(',');
 }

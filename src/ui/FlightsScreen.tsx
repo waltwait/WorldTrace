@@ -9,6 +9,7 @@ import {
   View,
 } from 'react-native';
 import { findAirport } from '../flights/airports';
+import { airportTime, departureCountdown } from '../flights/flightDisplay';
 import { createAeroDataBoxPort } from '../flights/flightStatusApi';
 import type { FlightRecord } from '../flights/types';
 import { database } from '../store/database';
@@ -85,22 +86,7 @@ export const FlightsScreen = memo(function FlightsScreen({
     const depAirport = findAirport(item.depIata);
     const arrAirport = findAirport(item.arrIata);
 
-    const now = Date.now();
-    const diffMs = item.depScheduledUtc - now;
-    const diffDays = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
-
-    let countdownText = `${diffDays}d`;
-    if (item.isFinished) {
-      countdownText = '已完成';
-    } else if (diffDays <= 0) {
-      countdownText = '今日出發';
-    }
-
-    const formatTime = (utcMs: number) => {
-      const d = new Date(utcMs);
-      const pad = (n: number) => String(n).padStart(2, '0');
-      return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
-    };
+    const countdownText = departureCountdown(item, Date.now());
 
     return (
       <PressScale
@@ -132,7 +118,7 @@ export const FlightsScreen = memo(function FlightsScreen({
           <View style={styles.iataCol}>
             <Text style={styles.iataText}>{item.depIata}</Text>
             <Text style={styles.airportCityText}>{depAirport?.cityZh ?? item.depIata}</Text>
-            <Text style={styles.flightTimeText}>{formatTime(item.depScheduledUtc)}</Text>
+            <Text style={styles.flightTimeText}>{airportTime(item.depScheduledUtc, item.depTz)}</Text>
           </View>
 
           <View style={styles.centerCol}>
@@ -148,7 +134,7 @@ export const FlightsScreen = memo(function FlightsScreen({
           <View style={[styles.iataCol, styles.alignRight]}>
             <Text style={styles.iataText}>{item.arrIata}</Text>
             <Text style={styles.airportCityText}>{arrAirport?.cityZh ?? item.arrIata}</Text>
-            <Text style={styles.flightTimeText}>{formatTime(item.arrScheduledUtc)}</Text>
+            <Text style={styles.flightTimeText}>{airportTime(item.arrScheduledUtc, item.arrTz)}</Text>
           </View>
         </View>
 

@@ -1,5 +1,7 @@
 import { describe, expect, test } from 'vitest';
+import { findAirport } from './airports';
 import {
+  routesKey,
   buildFlightArcsGeoJson,
   buildGreatCircleArc,
   calculateFlightMiles,
@@ -79,5 +81,35 @@ describe('greatCircle', () => {
       ]);
       expect(geojson.features).toHaveLength(0);
     });
+  });
+});
+
+describe('arcs over the date line', () => {
+  test('a trans-Pacific arc never jumps across the map between two points', () => {
+    const tpe = findAirport('TPE')!;
+    const lax = findAirport('LAX')!;
+    const arc = buildGreatCircleArc(tpe, lax, 40);
+    for (let i = 1; i < arc.length; i++) {
+      expect(Math.abs(arc[i][0] - arc[i - 1][0])).toBeLessThan(180);
+    }
+    // It goes east over the Pacific: past 180 rather than back across Asia.
+    expect(arc[arc.length - 1][0]).toBeCloseTo(lax.lon + 360, 6);
+    expect(arc[arc.length - 1][1]).toBeCloseTo(lax.lat, 6);
+  });
+});
+
+describe('routesKey', () => {
+  const a = { id: 'a', depIata: 'TPE', arrIata: 'NRT' };
+  const b = { id: 'b', depIata: 'TPE', arrIata: 'LAX' };
+
+  test('changes when a route is added, removed or changed', () => {
+    const base = routesKey([a, b]);
+    expect(routesKey([a])).not.toBe(base);
+    expect(routesKey([a, b, { id: 'c', depIata: 'NRT', arrIata: 'TPE' }])).not.toBe(base);
+    expect(routesKey([a, { ...b, arrIata: 'SFO' }])).not.toBe(base);
+  });
+
+  test('stays the same for the same routes, whatever else about the flights changed', () => {
+    expect(routesKey([{ ...a, depGate: 'B7' } as typeof a, b])).toBe(routesKey([a, b]));
   });
 });

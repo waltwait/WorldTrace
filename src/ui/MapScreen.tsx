@@ -9,10 +9,11 @@ import {
 } from '@maplibre/maplibre-react-native';
 import type { StyleSpecification } from '@maplibre/maplibre-gl-style-spec';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import type { TrackSegment } from '../export/gpx';
 import { findAirport } from '../flights/airports';
-import { buildFlightArcsGeoJson } from '../flights/greatCircle';
+import { buildFlightArcsGeoJson, buildGreatCircleArc, routesKey } from '../flights/greatCircle';
+import { routeCamera } from '../flights/routeCamera';
 import type { FlightRecord } from '../flights/types';
 import { database } from '../store/database';
 import { listFlights } from '../store/flights';
@@ -49,6 +50,8 @@ export interface MapScreenProps {
   onClearHighlight: () => void;
   focusedFlight?: FlightRecord | null;
   onClearFocusedFlight?: () => void;
+  /** Whether the map is the page on screen; flights are re-read on arrival. */
+  active?: boolean;
 }
 
 export const MapScreen = memo(function MapScreen({
@@ -57,12 +60,18 @@ export const MapScreen = memo(function MapScreen({
   onClearHighlight,
   focusedFlight,
   onClearFocusedFlight,
+  active = true,
 }: MapScreenProps) {
   const [mapLayerMode, setMapLayerMode] = useState<'all' | 'fog' | 'flights'>('all');
   const [flights, setFlights] = useState<FlightRecord[]>([]);
   const cameraRef = useRef<CameraRef>(null);
+  const { width, height } = useWindowDimensions();
 
+  // The map stays mounted, so reading flights once at mount meant a flight
+  // added on the Trips page never got an arc, and a deleted one kept its arc,
+  // until the app restarted. Read them each time the map comes into view.
   useEffect(() => {
+    if (!active) return;
     let cancelled = false;
     void (async () => {
       try {
@@ -76,7 +85,7 @@ export const MapScreen = memo(function MapScreen({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [active]);
 
   useEffect(() => {
     if (!focusedFlight) return;
@@ -86,18 +95,22 @@ export const MapScreen = memo(function MapScreen({
     const dep = findAirport(focusedFlight.depIata);
     const arr = findAirport(focusedFlight.arrIata);
     if (dep && arr) {
-      const minLon = Math.min(dep.lon, arr.lon);
-      const maxLon = Math.max(dep.lon, arr.lon);
-      const minLat = Math.min(dep.lat, arr.lat);
-      const maxLat = Math.max(dep.lat, arr.lat);
-      cameraRef.current?.fitBounds([minLon, minLat, maxLon, maxLat], {
-        padding: { top: 120, bottom: 140, left: 60, right: 60 },
-        duration: 1200,
-      });
+      // Framed from the arc itself, the short way round: a box from the two
+      // airports' smallest to largest longitude framed TPE→LAX on Africa.
+      const route = buildGreatCircleArc(dep, arr, 40);
+      const padding = { top: 120, bottom: 140, left: 60, right: 60 };
+      const { center, zoom } = routeCamera(route, { width, height }, padding);
+      cameraRef.current?.easeTo({ center, zoom, padding, duration: 1200 });
     }
   }, [focusedFlight]);
 
-  const flightArcs = useMemo(() => buildFlightArcsGeoJson(flights), [flights]);
+  // A string, made once per change of route: GeoJSONSource stringifies an
+  // object on every render (see useFog).
+  const arcsKey = routesKey(flights);
+  const flightArcs = useMemo(() => {
+    const arcs = buildFlightArcsGeoJson(flights);
+    return arcs.features.length > 0 ? JSON.stringify(arcs) : null;
+  }, [arcsKey]);
 
   const trackLines = useMemo(() => {
     if (!highlighted) return null;
@@ -183,7 +196,7 @@ export const MapScreen = memo(function MapScreen({
           </GeoJSONSource>
         ) : null}
 
-        {flightArcs && mapLayerMode !== 'fog' && flightArcs.features.length > 0 ? (
+        {flightArcs && mapLayerMode !== 'fog' ? (
           <GeoJSONSource id="flight-arcs" data={flightArcs} maxzoom={18}>
             <Layer
               id="flight-arcs-outer"

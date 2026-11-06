@@ -11,6 +11,7 @@ import {
 import * as DocumentPicker from 'expo-document-picker';
 import * as Sharing from 'expo-sharing';
 import { findAirport, getArrivalTimezoneSummary } from '../flights/airports';
+import { airportDate, airportTime } from '../flights/flightDisplay';
 import {
   createAeroDataBoxPort,
   syncFlightStatus,
@@ -90,18 +91,14 @@ function FlightDetailContent({
 
   const depAirport = findAirport(flight.depIata);
   const arrAirport = findAirport(flight.arrIata);
-  const tzSummary = getArrivalTimezoneSummary(flight.depIata, flight.arrIata);
+  const tzSummary = getArrivalTimezoneSummary(
+    flight.depIata,
+    flight.arrIata,
+    // The offsets on the day of the flight, not today: across a daylight-
+    // saving change the difference is an hour out otherwise.
+    new Date(flight.depScheduledUtc),
+  );
 
-  const formatTime = (utcMs: number) => {
-    const d = new Date(utcMs);
-    const pad = (n: number) => String(n).padStart(2, '0');
-    return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
-  };
-
-  const formatDate = (utcMs: number) => {
-    const d = new Date(utcMs);
-    return `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()}`;
-  };
 
   const toggleFinished = useCallback(async () => {
     const nextFinished = !flight.isFinished;
@@ -255,7 +252,7 @@ function FlightDetailContent({
               </View>
               <Text style={styles.headerRoute}>
                 {depAirport?.cityZh ?? flight.depIata} → {arrAirport?.cityZh ?? flight.arrIata} ·{' '}
-                {formatDate(flight.depScheduledUtc)}
+                {airportDate(flight.depScheduledUtc, flight.depTz)}
               </Text>
             </View>
             <PressScale style={styles.closeButton} onPress={onClose} hitSlop={8}>
@@ -270,7 +267,7 @@ function FlightDetailContent({
                 <View style={styles.airportCol}>
                   <Text style={styles.airportFlag}>{depAirport?.flagEmoji ?? '✈️'}</Text>
                   <Text style={styles.airportIata}>{flight.depIata}</Text>
-                  <Text style={styles.timeText}>{formatTime(flight.depScheduledUtc)}</Text>
+                  <Text style={styles.timeText}>{airportTime(flight.depScheduledUtc, flight.depTz)}</Text>
                   <Text style={styles.cityText}>{depAirport?.city ?? flight.depIata}</Text>
 
                   {/* Airport Yellow Sign Badge */}
@@ -295,7 +292,7 @@ function FlightDetailContent({
                 <View style={[styles.airportCol, styles.alignRight]}>
                   <Text style={styles.airportFlag}>{arrAirport?.flagEmoji ?? '🛬'}</Text>
                   <Text style={styles.airportIata}>{flight.arrIata}</Text>
-                  <Text style={styles.timeText}>{formatTime(flight.arrScheduledUtc)}</Text>
+                  <Text style={styles.timeText}>{airportTime(flight.arrScheduledUtc, flight.arrTz)}</Text>
                   <Text style={styles.cityText}>{arrAirport?.city ?? flight.arrIata}</Text>
 
                   {/* Airport Yellow Sign Badge */}

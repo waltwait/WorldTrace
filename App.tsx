@@ -264,6 +264,7 @@ export default function App() {
               onClearHighlight={clearHighlight}
               focusedFlight={focusedFlight}
               onClearFocusedFlight={clearFocusedFlight}
+              active={index === 1}
             />
           ) : null}
         </SlideScreen>
