@@ -1,6 +1,5 @@
 import { describe, expect, test, vi } from 'vitest';
 import {
-  legToFlightRecord,
   parseItineraryTextOffline,
   parseTicketWithGemini,
   type GeminiExtractedLeg,
@@ -23,24 +22,6 @@ describe('geminiParser', () => {
     pnr: '7X9K2M',
     cabinClass: 'Economy',
   };
-
-  describe('legToFlightRecord', () => {
-    test('converts extracted leg into full FlightRecord with calculated distance and timezone', () => {
-      const flight = legToFlightRecord(sampleLeg);
-
-      expect(flight.flightNumber).toBe('CI501');
-      expect(flight.depIata).toBe('TPE');
-      expect(flight.arrIata).toBe('PVG');
-      expect(flight.depTz).toBe('Asia/Taipei');
-      expect(flight.arrTz).toBe('Asia/Shanghai');
-      expect(flight.distanceMiles).toBeGreaterThan(400);
-      expect(flight.durationMinutes).toBe(125);
-      expect(flight.seat).toBe('24A');
-      expect(flight.pnr).toBe('7X9K2M');
-      expect(flight.isFinished).toBe(false);
-      expect(flight.notificationsEnabled).toBe(true);
-    });
-  });
 
   describe('parseTicketWithGemini', () => {
     test('calls gemini-3.5-flash-lite endpoint and parses structured output', async () => {
@@ -104,6 +85,54 @@ describe('geminiParser', () => {
 
     test('returns empty array when no flight pattern is found', () => {
       expect(parseItineraryTextOffline('今天天氣很好去散步')).toEqual([]);
+    });
+
+    test('reads airport codes only as whole words', () => {
+      // SEAT is not Seattle, and TAIPEI holds no airport code.
+      const [leg] = parseItineraryTextOffline('BR198 SEAT 24A TAIPEI TPE NRT');
+      expect([leg.depIata, leg.arrIata]).toEqual(['TPE', 'NRT']);
+    });
+
+    test('leaves the route empty when the text names no airport, rather than assuming TPE→PVG', () => {
+      const [leg] = parseItineraryTextOffline('BR198 2026-12-31');
+      expect([leg.depIata, leg.arrIata]).toEqual(['', '']);
+    });
+
+    test('names no airline it was not told', () => {
+      const [leg] = parseItineraryTextOffline('BR198 TPE NRT');
+      expect(leg.airlineName).toBe('');
+    });
+
+    test('takes a booking code only where the text labels one', () => {
+      expect(parseItineraryTextOffline('Flight BR198 TPE NRT')[0].pnr).toBeNull();
+      expect(parseItineraryTextOffline('BR198 TPE NRT PNR: 8YK2MP')[0].pnr).toBe('8YK2MP');
+    });
+
+    test('takes a seat only where the text labels one', () => {
+      expect(parseItineraryTextOffline('BR198 TPE NRT 第 2 航廈 1A 門')[0].seat).toBeNull();
+      expect(parseItineraryTextOffline('BR198 TPE NRT Seat 10K')[0].seat).toBe('10K');
+    });
+
+    test('gives only the date and times the text contains', () => {
+      const none = parseItineraryTextOffline('BR198 TPE NRT')[0];
+      expect([none.depScheduledIso, none.arrScheduledIso]).toEqual(['', '']);
+
+      const dateOnly = parseItineraryTextOffline('BR198 TPE NRT 2026/12/1')[0];
+      expect([dateOnly.depScheduledIso, dateOnly.arrScheduledIso]).toEqual(['2026-12-01', '']);
+
+      const both = parseItineraryTextOffline('BR198 2026-12-01 07:30 TPE → 11:45 NRT')[0];
+      expect([both.depScheduledIso, both.arrScheduledIso]).toEqual([
+        '2026-12-01T07:30',
+        '2026-12-01T11:45',
+      ]);
+    });
+
+    test('gives a cabin only when the text names one', () => {
+      expect(parseItineraryTextOffline('BR198 TPE NRT')[0].cabinClass).toBeNull();
+      expect(parseItineraryTextOffline('BR198 TPE NRT 商務艙')[0].cabinClass).toBe('Business');
+      expect(parseItineraryTextOffline('BR198 TPE NRT Premium Economy')[0].cabinClass).toBe(
+        'Premium Economy',
+      );
     });
   });
 });

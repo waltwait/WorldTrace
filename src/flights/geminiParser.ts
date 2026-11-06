@@ -3,8 +3,6 @@
  */
 
 import { findAirport } from './airports';
-import { calculateFlightMiles } from './greatCircle';
-import type { CabinClass, FlightRecord } from './types';
 
 export interface GeminiExtractedLeg {
   airlineCode: string;
@@ -21,72 +19,6 @@ export interface GeminiExtractedLeg {
   seat?: string | null;
   pnr?: string | null;
   cabinClass?: string | null;
-}
-
-export function legToFlightRecord(leg: GeminiExtractedLeg): FlightRecord {
-  const depUpper = leg.depIata.trim().toUpperCase();
-  const arrUpper = leg.arrIata.trim().toUpperCase();
-
-  const depAirport = findAirport(depUpper);
-  const arrAirport = findAirport(arrUpper);
-
-  const depTz = depAirport?.tz ?? 'Asia/Taipei';
-  const arrTz = arrAirport?.tz ?? 'Asia/Shanghai';
-
-  let depScheduledUtc = Date.parse(leg.depScheduledIso);
-  let arrScheduledUtc = Date.parse(leg.arrScheduledIso);
-
-  if (Number.isNaN(depScheduledUtc)) {
-    depScheduledUtc = Date.now() + 24 * 3600 * 1000;
-  }
-  if (Number.isNaN(arrScheduledUtc) || arrScheduledUtc <= depScheduledUtc) {
-    arrScheduledUtc = depScheduledUtc + 2 * 3600 * 1000;
-  }
-
-  const durationMinutes = Math.max(1, Math.round((arrScheduledUtc - depScheduledUtc) / 60000));
-
-  let distanceMiles = 500;
-  if (depAirport && arrAirport) {
-    distanceMiles = calculateFlightMiles(
-      { lat: depAirport.lat, lon: depAirport.lon },
-      { lat: arrAirport.lat, lon: arrAirport.lon },
-    );
-  }
-
-  const cleanNum = leg.flightNumber.trim().toUpperCase();
-  const airlineCode = leg.airlineCode.trim().toUpperCase() || cleanNum.slice(0, 2);
-
-  return {
-    id: `fl_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-    flightNumber: cleanNum,
-    airlineCode,
-    airlineName: leg.airlineName.trim() || airlineCode,
-    alliance: (leg.alliance as FlightRecord['alliance']) ?? null,
-    depIata: depUpper,
-    arrIata: arrUpper,
-    depScheduledUtc,
-    depEstimatedUtc: null,
-    arrScheduledUtc,
-    arrEstimatedUtc: null,
-    depTz,
-    arrTz,
-    depTerminal: leg.depTerminal ?? null,
-    arrTerminal: leg.arrTerminal ?? null,
-    depGate: leg.depGate ?? null,
-    arrGate: null,
-    baggageBelt: null,
-    status: 'SCHEDULED',
-    distanceMiles,
-    durationMinutes,
-    seat: leg.seat ?? null,
-    cabinClass: (leg.cabinClass as CabinClass) ?? 'Economy',
-    pnr: leg.pnr ?? null,
-    notes: null,
-    notificationsEnabled: true,
-    isFinished: false,
-    lastSyncedAt: Date.now(),
-    createdAt: Date.now(),
-  };
 }
 
 export interface ParseTicketInput {
@@ -182,61 +114,74 @@ export async function parseTicketWithGemini(
 }
 
 /**
- * Offline regex-based itinerary parser for quick plain-text paste.
+ * Offline parser for pasted itinerary text, used when there is no Gemini key.
+ *
+ * It returns only what the text actually contains and leaves the rest empty
+ * for the form to ask about. It used to fill the gaps: TPE→PVG when it found
+ * no airport, 「中華航空」 for any flight out of Taiwan, 2026-12-31 09:00–11:30
+ * for any flight without a date, and the first six-letter word as the booking
+ * code ("FLIGHT", "TAIPEI"). Each of those became a saved flight and a stamp in
+ * the passport.
  */
 export function parseItineraryTextOffline(text: string): GeminiExtractedLeg[] {
   if (!text || text.trim().length === 0) return [];
 
-  // Match flight number (e.g. CI501, BR198, JX800, DL123)
+  // Flight number, e.g. CI501, BR 198, JX800
   const flightMatch = text.match(/\b([A-Z0-9]{2})\s*([0-9]{3,4})\b/i);
   if (!flightMatch) return [];
 
   const airlineCode = flightMatch[1].toUpperCase();
   const flightNumber = `${airlineCode}${flightMatch[2]}`;
 
-  // Find 3-letter IATAs that exist in our database
-  const words = text.match(/[A-Z]{3}/g) ?? [];
-  const validIatas = words.filter((w) => Boolean(findAirport(w)));
+  // Whole-word codes the airport table knows, in the order the text gives
+  // them. Whole words: "SEAT" is not Seattle.
+  const iatas = (text.match(/\b[A-Z]{3}\b/g) ?? []).filter((w) => Boolean(findAirport(w)));
+  const depIata = iatas[0] ?? '';
+  const arrIata = iatas[1] ?? '';
 
-  let depIata = 'TPE';
-  let arrIata = 'PVG';
+  const dateMatch = text.match(/\b(\d{4})[-/](\d{1,2})[-/](\d{1,2})\b/);
+  const date = dateMatch
+    ? `${dateMatch[1]}-${dateMatch[2].padStart(2, '0')}-${dateMatch[3].padStart(2, '0')}`
+    : '';
 
-  if (validIatas.length >= 2) {
-    depIata = validIatas[0];
-    arrIata = validIatas[1];
-  } else if (validIatas.length === 1) {
-    if (validIatas[0] !== 'TPE') {
-      arrIata = validIatas[0];
-    }
-  }
+  // Times as written, local to their airports: the first is the departure,
+  // the second the arrival. Only meaningful with a date.
+  const times = [...text.matchAll(/\b([01]?\d|2[0-3]):([0-5]\d)\b/g)].map(
+    (m) => `${m[1].padStart(2, '0')}:${m[2]}`,
+  );
+  const at = (time: string | undefined) => (date && time ? `${date}T${time}` : date);
+  const depScheduledIso = at(times[0]);
+  const arrScheduledIso = times[1] ? at(times[1]) : '';
 
-  // Find date e.g. 2026-12-31 or 2026/12/31
-  const dateMatch = text.match(/\b(\d{4}[-/]\d{1,2}[-/]\d{1,2})\b/);
-  const dateStr = dateMatch ? dateMatch[1].replace(/\//g, '-') : '2026-12-31';
-
-  // Find seat e.g. 24A, 10K
-  const seatMatch = text.match(/(?:座位|seat)\s*([0-9]{1,2}[A-K])\b/i) ?? text.match(/\b([0-9]{1,2}[A-K])\b/i);
+  const seatMatch = text.match(/(?:座位|座號|seat)\s*[:：]?\s*([0-9]{1,2}[A-K])\b/i);
   const seat = seatMatch ? seatMatch[1].toUpperCase() : null;
 
-  // Find PNR e.g. 7X9K2M (6 alphanumeric)
-  const pnrMatch = text.match(/(?:pnr|訂位代號)\s*([A-Z0-9]{6})\b/i) ?? text.match(/\b([A-Z0-9]{6})\b/i);
+  const pnrMatch = text.match(
+    /(?:pnr|訂位代號|訂位代碼|電腦代號|booking\s*(?:ref(?:erence)?|code)|confirmation(?:\s*(?:no\.?|number|code))?)\s*[:：#]?\s*([A-Z0-9]{6})\b/i,
+  );
   const pnr = pnrMatch ? pnrMatch[1].toUpperCase() : null;
-
-  const depAirport = findAirport(depIata);
-  const arrAirport = findAirport(arrIata);
 
   return [
     {
       airlineCode,
-      airlineName: depAirport?.countryCode === 'TW' ? '中華航空' : airlineCode,
+      airlineName: '',
       flightNumber,
       depIata,
       arrIata,
-      depScheduledIso: `${dateStr}T09:00:00+08:00`,
-      arrScheduledIso: `${dateStr}T11:30:00+08:00`,
+      depScheduledIso,
+      arrScheduledIso,
       seat,
       pnr,
-      cabinClass: 'Economy',
+      cabinClass: cabinFromText(text),
     },
   ];
+}
+
+function cabinFromText(text: string): string | null {
+  // Premium economy first: it also says "economy".
+  if (/premium\s*economy|豪華經濟艙|特選經濟艙/i.test(text)) return 'Premium Economy';
+  if (/business|商務艙/i.test(text)) return 'Business';
+  if (/first\s*class|頭等艙/i.test(text)) return 'First';
+  if (/economy|經濟艙/i.test(text)) return 'Economy';
+  return null;
 }

@@ -50,6 +50,9 @@ src/cloud/       Google Drive backup: auth, REST, schedule, restore verification
 src/export/      GPX and database snapshots
 src/progress/    levels and tiered achievements
 src/places/      reverse geocoding, a few tiles per launch
+src/flights/     flights, kept apart from the track: the add form (flightForm),
+                 airport-local time (zonedTime), ticket parsing, status polling,
+                 great-circle arcs, passport stats
 src/ui/          screens, formatting, the app's own dialog
 ```
 
@@ -227,6 +230,15 @@ quietly wrong.
   (`ui/dialog.ts` + `ui/DialogHost.tsx`); do not use `Alert.alert`.
 - Area always comes from the fog bitmaps, never from the points — the map and
   the number must agree.
+- A flight carries only what was typed or read off a ticket — the same rule as
+  the track. `flights/flightForm.ts` refuses to save without a date and time,
+  and leaves gate, terminal, seat and cabin empty when nobody gave them; the
+  first version of the sheet made all of those up. Ticket times are local to
+  their airport (`flights/zonedTime.ts`), never the phone's zone.
+- Every hook runs before any `return`. No component can be mounted under
+  vitest, so `ui/hookOrder.test.ts` reads the source of every component
+  instead; a hook after an early return took the whole app down on the first
+  tapped flight card, with every test green.
 - The map stays north-up (`trackUserLocation="default"`). A rotating fog map is
   much harder to read.
 - Exports can be shared or saved to a folder (`export/saveToFolder.ts`). Android
