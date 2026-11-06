@@ -47,6 +47,20 @@ export const FlightDetailSheet = memo(function FlightDetailSheet(
   return <FlightDetailContent {...props} flight={flight} />;
 });
 
+/**
+ * ActionButton swallows a thrown error, so each action here catches its own
+ * and says so in the app's dialog: a failure is reported by a dialog, never
+ * by the button (CLAUDE.md).
+ */
+async function failed(title: string, error: unknown): Promise<{ ok: false }> {
+  await ask({
+    title,
+    message: error instanceof Error ? error.message : String(error),
+    confirmLabel: '好',
+  });
+  return { ok: false };
+}
+
 function FlightDetailContent({
   flight,
   visible,
@@ -97,15 +111,19 @@ function FlightDetailContent({
 
 
   const toggleFinished = useCallback(async () => {
-    const nextFinished = !flight.isFinished;
-    const db = await database();
-    await updateFlight(db, flight.id, { isFinished: nextFinished });
-    const updated = { ...flight, isFinished: nextFinished };
-    onFlightUpdated(updated);
-    return {
-      ok: true as const,
-      message: nextFinished ? '已標記為完成' : '已移至即將出發',
-    };
+    try {
+      const nextFinished = !flight.isFinished;
+      const db = await database();
+      await updateFlight(db, flight.id, { isFinished: nextFinished });
+      const updated = { ...flight, isFinished: nextFinished };
+      onFlightUpdated(updated);
+      return {
+        ok: true as const,
+        message: nextFinished ? '已標記為完成' : '已移至即將出發',
+      };
+    } catch (error) {
+      return failed('無法更新航班', error);
+    }
   }, [flight, onFlightUpdated]);
 
   const handleSyncStatus = useCallback(async () => {
@@ -120,11 +138,8 @@ function FlightDetailContent({
         ok: true as const,
         message: `航班狀態：${updated.status}${updated.depGate ? ` · Gate ${updated.depGate}` : ''}`,
       };
-    } catch (err) {
-      return {
-        ok: false as const,
-        message: err instanceof Error ? err.message : '同步失敗',
-      };
+    } catch (error) {
+      return failed('同步失敗', error);
     }
   }, [flight, onFlightUpdated]);
 
@@ -134,17 +149,21 @@ function FlightDetailContent({
       arrGate: arrGateInput.trim() || null,
       baggageBelt: baggageInput.trim() || null,
     };
-    const db = await database();
-    await updateFlight(db, flight.id, patch);
-    const updated: FlightRecord = {
-      ...flight,
-      depGate: patch.depGate,
-      arrGate: patch.arrGate,
-      baggageBelt: patch.baggageBelt,
-    };
-    onFlightUpdated(updated);
-    setEditingGate(false);
-    return { ok: true as const, message: '已更新登機門與行李轉盤' };
+    try {
+      const db = await database();
+      await updateFlight(db, flight.id, patch);
+      const updated: FlightRecord = {
+        ...flight,
+        depGate: patch.depGate,
+        arrGate: patch.arrGate,
+        baggageBelt: patch.baggageBelt,
+      };
+      onFlightUpdated(updated);
+      setEditingGate(false);
+      return { ok: true as const, message: '已更新登機門與行李轉盤' };
+    } catch (error) {
+      return failed('無法儲存登機門', error);
+    }
   }, [flight, depGateInput, arrGateInput, baggageInput, onFlightUpdated]);
 
   const handleAddDoc = useCallback(async () => {

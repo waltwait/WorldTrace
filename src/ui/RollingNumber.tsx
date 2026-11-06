@@ -40,6 +40,11 @@ export function RollingNumber({
   const progress = useRef(new Animated.Value(0)).current;
   const flipY = useRef(new Animated.Value(0)).current;
   const flipOpacity = useRef(new Animated.Value(1)).current;
+  // Read through a ref, not listed as a dependency: callers pass inline
+  // formatters, and a new function on every render of the screen re-ran the
+  // effect, which stopped a count-up halfway and jumped it to the end.
+  const formatRef = useRef(format);
+  formatRef.current = format;
 
   useEffect(() => {
     const arriving = runRef.current !== run;
@@ -56,6 +61,7 @@ export function RollingNumber({
 
     // Nothing to see, or nothing that was earned by arriving: no animation, and
     // no JS thread time spent making one.
+    const format = formatRef.current;
     if (reduced || !shouldCount({ from, to: value, arriving, format })) {
       flipY.setValue(0);
       flipOpacity.setValue(1);
@@ -138,7 +144,7 @@ export function RollingNumber({
       animation.stop();
       progress.removeListener(listener);
     };
-  }, [value, run, reduced, progress, flipY, flipOpacity, format]);
+  }, [value, run, reduced, progress, flipY, flipOpacity]);
 
   return (
     <Animated.Text
