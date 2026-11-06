@@ -288,6 +288,11 @@ quietly wrong.
 - The press, busy and confirmation animations on the backup page and the
   timeline have passed their tests and bundle cleanly but have not been watched
   running on the phone.
+- Flight tickets and boarding passes are kept in `flight-docs/` beside the
+  database, not in it (`store/flightDocs.ts`), so a Drive backup or a snapshot
+  carries the rows but not the files: after a restore onto another phone a
+  document is listed and will not open. Documents attached before they were
+  copied out of the picker's cache may already be gone.
 - Every fog change still reloads all tile BLOBs (`loadAllTiles`) and recomputes
   the area; the viewport work only bounds tracing and rendering.
 - Published at https://github.com/waltwait/WorldTrace. `android/`, `docs/`,

@@ -27,7 +27,9 @@ import {
 } from '../flights/geminiParser';
 import type { FlightRecord } from '../flights/types';
 import { database } from '../store/database';
-import { insertFlight, insertFlightDoc } from '../store/flights';
+import { expoDocFiles } from '../store/expoDocFiles';
+import { attachFlightDoc } from '../store/flightDocs';
+import { insertFlight } from '../store/flights';
 import { ActionButton } from './ActionButton';
 import { PressScale } from './PressScale';
 import { radius, theme } from './theme';
@@ -256,13 +258,13 @@ export const AddFlightSheet = memo(function AddFlightSheet({
       await insertFlight(db, flight);
 
       if (attachedDoc) {
-        await insertFlightDoc(db, {
+        await attachFlightDoc(db, expoDocFiles, {
           id: `doc_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
           flightId: flight.id,
+          sourceUri: attachedDoc.uri,
           fileName: attachedDoc.name,
-          localUri: attachedDoc.uri,
           mimeType: attachedDoc.mimeType,
-          createdAt: Date.now(),
+          now: Date.now(),
         });
       }
 

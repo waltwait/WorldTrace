@@ -18,13 +18,9 @@ import {
 } from '../flights/flightStatusApi';
 import type { FlightDocRecord, FlightRecord } from '../flights/types';
 import { database } from '../store/database';
-import {
-  deleteFlight,
-  deleteFlightDoc,
-  insertFlightDoc,
-  listFlightDocs,
-  updateFlight,
-} from '../store/flights';
+import { expoDocFiles } from '../store/expoDocFiles';
+import { attachFlightDoc, deleteFlightAndDocs, removeFlightDoc } from '../store/flightDocs';
+import { listFlightDocs, updateFlight } from '../store/flights';
 import { ActionButton } from './ActionButton';
 import { PressScale } from './PressScale';
 import { ask } from './dialog';
@@ -163,20 +159,24 @@ function FlightDetailContent({
       }
 
       const asset = result.assets[0];
-      const newDoc: FlightDocRecord = {
+      const db = await database();
+      const newDoc = await attachFlightDoc(db, expoDocFiles, {
         id: `doc_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
         flightId: flight.id,
+        sourceUri: asset.uri,
         fileName: asset.name,
-        localUri: asset.uri,
         mimeType: asset.mimeType ?? 'application/pdf',
-        createdAt: Date.now(),
-      };
-
-      const db = await database();
-      await insertFlightDoc(db, newDoc);
+        now: Date.now(),
+      });
       setDocs((prev) => [...prev, newDoc]);
-    } catch {
-      // Ignore cancelled or error
+    } catch (error) {
+      // A cancelled pick returns above; anything here is a real failure, such
+      // as the copy into the app's documents, and is said out loud.
+      await ask({
+        title: '無法附加檔案',
+        message: error instanceof Error ? error.message : String(error),
+        confirmLabel: '好',
+      });
     }
   }, [flight.id]);
 
@@ -203,7 +203,7 @@ function FlightDetailContent({
       if (!confirmed) return;
 
       const db = await database();
-      await deleteFlightDoc(db, doc.id);
+      await removeFlightDoc(db, expoDocFiles, doc);
       setDocs((prev) => prev.filter((d) => d.id !== doc.id));
     },
     [],
@@ -221,7 +221,7 @@ function FlightDetailContent({
     if (!confirmed) return;
 
     const db = await database();
-    await deleteFlight(db, flight.id);
+    await deleteFlightAndDocs(db, expoDocFiles, flight.id);
     onFlightDeleted(flight.id);
     onClose();
   }, [flight, onFlightDeleted, onClose]);
