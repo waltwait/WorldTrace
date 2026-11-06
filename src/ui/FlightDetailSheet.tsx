@@ -38,14 +38,26 @@ interface FlightDetailSheetProps {
   onViewOnMap?: (flight: FlightRecord) => void;
 }
 
-export const FlightDetailSheet = memo(function FlightDetailSheet({
+// The sheet is mounted before any flight is chosen. Every hook lives in
+// FlightDetailContent, which only exists once there is a flight: returning
+// null for a missing flight ahead of the hooks changed how many hooks ran
+// between renders, and React took the whole app down on the first tapped card.
+export const FlightDetailSheet = memo(function FlightDetailSheet(
+  props: FlightDetailSheetProps,
+) {
+  const { flight } = props;
+  if (!flight) return null;
+  return <FlightDetailContent {...props} flight={flight} />;
+});
+
+function FlightDetailContent({
   flight,
   visible,
   onClose,
   onFlightUpdated,
   onFlightDeleted,
   onViewOnMap,
-}: FlightDetailSheetProps) {
+}: FlightDetailSheetProps & { flight: FlightRecord }) {
   const [docs, setDocs] = useState<FlightDocRecord[]>([]);
   const [editingGate, setEditingGate] = useState(false);
   const [depGateInput, setDepGateInput] = useState('');
@@ -54,7 +66,6 @@ export const FlightDetailSheet = memo(function FlightDetailSheet({
   const [pnrEnlarged, setPnrEnlarged] = useState(false);
 
   useEffect(() => {
-    if (!flight) return;
     let cancelled = false;
     (async () => {
       try {
@@ -75,9 +86,7 @@ export const FlightDetailSheet = memo(function FlightDetailSheet({
     return () => {
       cancelled = true;
     };
-  }, [flight?.id]);
-
-  if (!flight) return null;
+  }, [flight.id]);
 
   const depAirport = findAirport(flight.depIata);
   const arrAirport = findAirport(flight.arrIata);
@@ -508,7 +517,7 @@ export const FlightDetailSheet = memo(function FlightDetailSheet({
       </View>
     </Modal>
   );
-});
+}
 
 const styles = StyleSheet.create({
   scrim: {
