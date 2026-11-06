@@ -7,6 +7,7 @@ import type { TrackSegment } from '../export/gpx';
 import { database } from '../store/database';
 import { listFlights } from '../store/flights';
 import { BackupScreen } from './BackupScreen';
+import { openTab } from './openedTabs';
 import { PressScale } from './PressScale';
 import { StatsScreen } from './StatsScreen';
 import { TimelineScreen } from './TimelineScreen';
@@ -36,6 +37,18 @@ export const ProfileScreen = memo(function ProfileScreen({
   onSelectDay,
 }: ProfileScreenProps) {
   const [subTab, setSubTab] = useState<ProfileSubTab>('explore');
+  // A sub-page mounts the first time it is opened and then stays, hidden, the
+  // same rule as the main pages (openedTabs.ts). Rendering only the selected
+  // one unmounted the backup page mid-restore: coming back found it idle, so
+  // a second restore or a backup could start while the first was still
+  // replacing the database files.
+  const [openedSubTabs, setOpenedSubTabs] = useState<ReadonlySet<ProfileSubTab>>(
+    () => new Set<ProfileSubTab>(['explore']),
+  );
+  const selectSubTab = useCallback((tab: ProfileSubTab) => {
+    setOpenedSubTabs((opened) => openTab(opened, tab));
+    setSubTab(tab);
+  }, []);
   const [flights, setFlights] = useState<FlightRecord[]>([]);
   const [detailsExpanded, setDetailsExpanded] = useState(false);
 
@@ -171,7 +184,7 @@ export const ProfileScreen = memo(function ProfileScreen({
         <PressScale
           containerStyle={styles.tabSlot}
           style={[styles.tabSegment, subTab === 'explore' && styles.tabSegmentActive]}
-          onPress={() => setSubTab('explore')}
+          onPress={() => selectSubTab('explore')}
         >
           <Text style={[styles.tabText, subTab === 'explore' && styles.tabTextActive]}>
             Explore
@@ -181,7 +194,7 @@ export const ProfileScreen = memo(function ProfileScreen({
         <PressScale
           containerStyle={styles.tabSlot}
           style={[styles.tabSegment, subTab === 'timeline' && styles.tabSegmentActive]}
-          onPress={() => setSubTab('timeline')}
+          onPress={() => selectSubTab('timeline')}
         >
           <Text style={[styles.tabText, subTab === 'timeline' && styles.tabTextActive]}>
             Timeline
@@ -191,7 +204,7 @@ export const ProfileScreen = memo(function ProfileScreen({
         <PressScale
           containerStyle={styles.tabSlot}
           style={[styles.tabSegment, subTab === 'backup' && styles.tabSegmentActive]}
-          onPress={() => setSubTab('backup')}
+          onPress={() => selectSubTab('backup')}
         >
           <Text style={[styles.tabText, subTab === 'backup' && styles.tabTextActive]}>
             Backup
@@ -201,19 +214,27 @@ export const ProfileScreen = memo(function ProfileScreen({
 
       {/* Subtab Content View */}
       <View style={styles.subContent}>
-        {subTab === 'explore' ? (
-          <StatsScreen
-            recorder={recorder}
-            active={active && subTab === 'explore'}
-            hideTitle
-          />
+        {openedSubTabs.has('explore') ? (
+          <View style={[styles.subPage, subTab !== 'explore' && styles.subPageHidden]}>
+            <StatsScreen
+              recorder={recorder}
+              active={active && subTab === 'explore'}
+              hideTitle
+            />
+          </View>
         ) : null}
 
-        {subTab === 'timeline' ? (
-          <TimelineScreen onSelectDay={onSelectDay} hideTitle />
+        {openedSubTabs.has('timeline') ? (
+          <View style={[styles.subPage, subTab !== 'timeline' && styles.subPageHidden]}>
+            <TimelineScreen onSelectDay={onSelectDay} hideTitle />
+          </View>
         ) : null}
 
-        {subTab === 'backup' ? <BackupScreen hideTitle /> : null}
+        {openedSubTabs.has('backup') ? (
+          <View style={[styles.subPage, subTab !== 'backup' && styles.subPageHidden]}>
+            <BackupScreen hideTitle />
+          </View>
+        ) : null}
       </View>
     </View>
   );
@@ -422,6 +443,12 @@ const styles = StyleSheet.create({
   tabTextActive: {
     color: theme.text,
     fontWeight: '700',
+  },
+  subPage: {
+    flex: 1,
+  },
+  subPageHidden: {
+    display: 'none',
   },
   subContent: {
     flex: 1,

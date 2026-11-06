@@ -11,7 +11,7 @@
  * tearing one down and rebuilding it on every visit would cost more than it
  * saved (see SlideScreen in App.tsx).
  */
-export function openTab(opened: ReadonlySet<number>, tab: number): ReadonlySet<number> {
+export function openTab<T>(opened: ReadonlySet<T>, tab: T): ReadonlySet<T> {
   if (opened.has(tab)) return opened;
 
   const next = new Set(opened);
