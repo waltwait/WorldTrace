@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { AIRPORTS_DB, findAirport } from '../flights/airports';
-import { computePassportStats } from '../flights/flightStats';
+import { computePassportStats, topAirline as findTopAirline } from '../flights/flightStats';
 import type { FlightRecord, PassportStats } from '../flights/types';
 import type { TrackSegment } from '../export/gpx';
 import { database } from '../store/database';
@@ -30,17 +30,6 @@ function getCountryInfo(code: string): { name: string; flag: string } {
   return { name: code, flag: '🌍' };
 }
 
-function getTopAirline(flights: FlightRecord[]): { name: string; count: number } | null {
-  if (flights.length === 0) return null;
-  const counts = new Map<string, number>();
-  for (const f of flights) {
-    const name = f.airlineName || f.airlineCode;
-    counts.set(name, (counts.get(name) ?? 0) + 1);
-  }
-  const sorted = Array.from(counts.entries()).sort((a, b) => b[1] - a[1]);
-  return sorted[0] ? { name: sorted[0][0], count: sorted[0][1] } : null;
-}
-
 export const ProfileScreen = memo(function ProfileScreen({
   recorder,
   active,
@@ -67,7 +56,7 @@ export const ProfileScreen = memo(function ProfileScreen({
   }, [active, refreshPassport]);
 
   const passport: PassportStats = computePassportStats(flights);
-  const topAirline = useMemo(() => getTopAirline(flights), [flights]);
+  const topAirline = useMemo(() => findTopAirline(flights), [flights]);
   const homeAirport = passport.topAirportIata ? findAirport(passport.topAirportIata) : null;
 
   return (

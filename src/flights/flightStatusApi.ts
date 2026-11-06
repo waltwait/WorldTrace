@@ -3,6 +3,7 @@
  */
 
 import type { FlightRecord, FlightStatus } from './types';
+import { utcToLocal } from './zonedTime';
 
 export interface FlightStatusUpdate {
   status?: FlightStatus;
@@ -17,7 +18,16 @@ export interface FlightStatusUpdate {
 }
 
 export interface FlightStatusPort {
-  fetchFlightStatus(flightNumber: string, dateIso: string): Promise<FlightStatusUpdate | null>;
+  /**
+   * `dateLocal` is the departure date on the departure airport's clocks, which
+   * is what a flight number is scheduled by; `depIata` picks the right leg of
+   * a number that flies several.
+   */
+  fetchFlightStatus(
+    flightNumber: string,
+    dateLocal: string,
+    depIata: string,
+  ): Promise<FlightStatusUpdate | null>;
 }
 
 /**
@@ -64,29 +74,33 @@ export async function syncFlightStatus(
   port: FlightStatusPort,
   nowMs: number = Date.now(),
 ): Promise<FlightRecord> {
-  const dateIso = new Date(flight.depScheduledUtc).toISOString().slice(0, 10);
+  // A flight number is scheduled by the local date at its origin: the UTC
+  // date of a 07:30 Taipei departure is the day before, and asking for that
+  // day returns yesterday's flight or nothing.
+  const dateLocal = utcToLocal(flight.depScheduledUtc, flight.depTz).date;
   let update: FlightStatusUpdate | null = null;
 
   try {
-    update = await port.fetchFlightStatus(flight.flightNumber, dateIso);
+    update = await port.fetchFlightStatus(flight.flightNumber, dateLocal, flight.depIata);
   } catch {
     update = null;
   }
 
   if (update) {
+    // Null from the API means it does not know yet — a gate is assigned hours
+    // before departure — not that there is none. Taking it as a value wiped
+    // the gate the user had typed in on every poll a day out.
     return {
       ...flight,
       status: update.status ?? flight.status,
-      depEstimatedUtc:
-        update.depEstimatedUtc !== undefined ? update.depEstimatedUtc : flight.depEstimatedUtc,
-      arrEstimatedUtc:
-        update.arrEstimatedUtc !== undefined ? update.arrEstimatedUtc : flight.arrEstimatedUtc,
-      depTerminal: update.depTerminal !== undefined ? update.depTerminal : flight.depTerminal,
-      arrTerminal: update.arrTerminal !== undefined ? update.arrTerminal : flight.arrTerminal,
-      depGate: update.depGate !== undefined ? update.depGate : flight.depGate,
-      arrGate: update.arrGate !== undefined ? update.arrGate : flight.arrGate,
-      baggageBelt: update.baggageBelt !== undefined ? update.baggageBelt : flight.baggageBelt,
-      isFinished: update.isFinished !== undefined ? update.isFinished : flight.isFinished,
+      depEstimatedUtc: update.depEstimatedUtc ?? flight.depEstimatedUtc,
+      arrEstimatedUtc: update.arrEstimatedUtc ?? flight.arrEstimatedUtc,
+      depTerminal: update.depTerminal ?? flight.depTerminal,
+      arrTerminal: update.arrTerminal ?? flight.arrTerminal,
+      depGate: update.depGate ?? flight.depGate,
+      arrGate: update.arrGate ?? flight.arrGate,
+      baggageBelt: update.baggageBelt ?? flight.baggageBelt,
+      isFinished: update.isFinished ?? flight.isFinished,
       lastSyncedAt: nowMs,
     };
   }
@@ -113,18 +127,69 @@ export async function syncFlightStatus(
 }
 
 /**
- * Default HTTP provider for AeroDataBox / external aviation API.
+ * AeroDataBox's flight progress status, as one of ours.
+ *
+ * Undefined where there is no honest equivalent, so a sync keeps the status
+ * it had: "Unknown", "Diverted" (no status here for it), and
+ * "CanceledUncertain", which is only probably cancelled — calling it
+ * cancelled would stop polling for good. The first version matched
+ * substrings of the wrong names ("en-route", "active"), so EnRoute and
+ * Departed fell through to SCHEDULED and overwrote IN_AIR for the whole
+ * flight.
  */
-export function createAeroDataBoxPort(apiKey?: string): FlightStatusPort {
+export function mapAeroDataBoxStatus(raw: string | null | undefined): FlightStatus | undefined {
+  switch (raw) {
+    case 'Expected':
+    case 'CheckIn':
+      return 'SCHEDULED';
+    case 'Boarding':
+    case 'GateClosed':
+      return 'BOARDING';
+    case 'Departed':
+    case 'EnRoute':
+    case 'Approaching':
+      return 'IN_AIR';
+    case 'Arrived':
+      return 'LANDED';
+    case 'Delayed':
+      return 'DELAYED';
+    case 'Canceled':
+      return 'CANCELLED';
+    default:
+      return undefined;
+  }
+}
+
+interface AeroDataBoxMovement {
+  airport?: { iata?: string | null } | null;
+  terminal?: string | null;
+  gate?: string | null;
+  baggageBelt?: string | null;
+}
+
+interface AeroDataBoxLeg {
+  status?: string | null;
+  departure?: AeroDataBoxMovement | null;
+  arrival?: AeroDataBoxMovement | null;
+}
+
+/**
+ * HTTP provider for AeroDataBox (via RapidAPI). `fetchFn` is injectable so
+ * the response handling runs under test without touching the network.
+ */
+export function createAeroDataBoxPort(
+  apiKey?: string,
+  fetchFn: typeof fetch = fetch,
+): FlightStatusPort {
   return {
-    async fetchFlightStatus(flightNumber: string, dateIso: string): Promise<FlightStatusUpdate | null> {
+    async fetchFlightStatus(flightNumber, dateLocal, depIata) {
       if (!apiKey) return null;
 
       try {
         const cleanNum = flightNumber.trim().toUpperCase();
-        const url = `https://aerodatabox.p.rapidapi.com/flights/number/${encodeURIComponent(cleanNum)}/${dateIso}`;
+        const url = `https://aerodatabox.p.rapidapi.com/flights/number/${encodeURIComponent(cleanNum)}/${dateLocal}`;
 
-        const res = await fetch(url, {
+        const res = await fetchFn(url, {
           headers: {
             'X-RapidAPI-Key': apiKey,
             'X-RapidAPI-Host': 'aerodatabox.p.rapidapi.com',
@@ -133,38 +198,25 @@ export function createAeroDataBoxPort(apiKey?: string): FlightStatusPort {
 
         if (!res.ok) return null;
 
-        const data = await res.json();
-        const leg = Array.isArray(data) ? data[0] : data;
+        const data = (await res.json()) as AeroDataBoxLeg | AeroDataBoxLeg[];
+        const legs = Array.isArray(data) ? data : [data];
+        // One number can fly several legs on a day (TPE→NRT→HNL). The first
+        // leg is not necessarily ours, and another leg's gate is worse than
+        // none.
+        const from = depIata.trim().toUpperCase();
+        const leg = legs.find((l) => l?.departure?.airport?.iata?.toUpperCase() === from);
         if (!leg) return null;
 
-        const depGate = leg.departure?.gate ?? null;
-        const arrGate = leg.arrival?.gate ?? null;
-        const depTerminal = leg.departure?.terminal ?? null;
-        const arrTerminal = leg.arrival?.terminal ?? null;
-        const baggageBelt = leg.arrival?.baggageBelt ?? null;
-
-        let status: FlightStatus = 'SCHEDULED';
-        const rawStatus = (leg.status ?? '').toLowerCase();
-        if (rawStatus.includes('landed') || rawStatus.includes('arrived')) {
-          status = 'LANDED';
-        } else if (rawStatus.includes('active') || rawStatus.includes('en-route') || rawStatus.includes('airborne')) {
-          status = 'IN_AIR';
-        } else if (rawStatus.includes('boarding')) {
-          status = 'BOARDING';
-        } else if (rawStatus.includes('cancel')) {
-          status = 'CANCELLED';
-        } else if (rawStatus.includes('delay')) {
-          status = 'DELAYED';
-        }
-
+        const status = mapAeroDataBoxStatus(leg.status);
         return {
           status,
-          depGate,
-          arrGate,
-          depTerminal,
-          arrTerminal,
-          baggageBelt,
-          isFinished: status === 'LANDED',
+          depGate: leg.departure?.gate ?? null,
+          arrGate: leg.arrival?.gate ?? null,
+          depTerminal: leg.departure?.terminal ?? null,
+          arrTerminal: leg.arrival?.terminal ?? null,
+          baggageBelt: leg.arrival?.baggageBelt ?? null,
+          // Only an arrival finishes a flight; anything else leaves it as it was.
+          isFinished: status === 'LANDED' ? true : undefined,
         };
       } catch {
         return null;

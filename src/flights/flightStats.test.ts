@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { computePassportStats } from './flightStats';
+import { computePassportStats, topAirline } from './flightStats';
 import type { FlightRecord } from './types';
 
 function createMockFlight(overrides: Partial<FlightRecord>): FlightRecord {
@@ -77,26 +77,35 @@ describe('flightStats', () => {
     expect(stats.airportVisits[2]).toEqual({ iata: 'PVG', count: 1 });
   });
 
-  test('only counts finished flights when finishedOnly filter is specified', () => {
-    const f1 = createMockFlight({
+  test('counts only flights already flown: a booked trip earns no hours, miles or stamp', () => {
+    const flown = createMockFlight({
       id: 'f-1',
       isFinished: true,
       distanceMiles: 500,
       durationMinutes: 60,
     });
-    const f2 = createMockFlight({
+    const booked = createMockFlight({
       id: 'f-2',
       isFinished: false,
-      distanceMiles: 1000,
-      durationMinutes: 120,
+      arrIata: 'LHR',
+      distanceMiles: 6000,
+      durationMinutes: 800,
     });
 
-    const statsAll = computePassportStats([f1, f2]);
-    expect(statsAll.totalFlights).toBe(2);
+    const stats = computePassportStats([flown, booked]);
+    expect(stats.totalFlights).toBe(1);
+    expect(stats.totalMiles).toBe(500);
+    expect(stats.totalHours).toBe(1.0);
+    expect(stats.visitedCountryCodes).not.toContain('GB');
+  });
 
-    const statsFinished = computePassportStats([f1, f2], { finishedOnly: true });
-    expect(statsFinished.totalFlights).toBe(1);
-    expect(statsFinished.totalMiles).toBe(500);
-    expect(statsFinished.totalHours).toBe(1.0);
+  test('the top airline is the one flown most, not the one booked most', () => {
+    const flights = [
+      createMockFlight({ id: 'a', airlineName: 'EVA Air', isFinished: true }),
+      createMockFlight({ id: 'b', airlineName: 'Starlux', isFinished: false }),
+      createMockFlight({ id: 'c', airlineName: 'Starlux', isFinished: false }),
+    ];
+    expect(topAirline(flights)).toEqual({ name: 'EVA Air', count: 1 });
+    expect(topAirline([flights[1]])).toBeNull();
   });
 });

@@ -9,14 +9,10 @@ import {
   View,
 } from 'react-native';
 import { findAirport } from '../flights/airports';
-import {
-  createAeroDataBoxPort,
-  shouldPollFlight,
-  syncFlightStatus,
-} from '../flights/flightStatusApi';
+import { createAeroDataBoxPort } from '../flights/flightStatusApi';
 import type { FlightRecord } from '../flights/types';
 import { database } from '../store/database';
-import { listFlights, updateFlight } from '../store/flights';
+import { refreshDueFlights } from '../store/flightRefresh';
 import { AddFlightSheet } from './AddFlightSheet';
 import { FlightDetailSheet } from './FlightDetailSheet';
 import { PressScale } from './PressScale';
@@ -39,26 +35,8 @@ export const FlightsScreen = memo(function FlightsScreen({
   const refreshFlights = useCallback(async () => {
     try {
       const db = await database();
-      const all = await listFlights(db);
-
-      const apiKey = process.env.EXPO_PUBLIC_FLIGHT_API_KEY;
-      const port = createAeroDataBoxPort(apiKey);
-      const now = Date.now();
-
-      const synced: FlightRecord[] = [];
-      for (const f of all) {
-        if (shouldPollFlight(f, now)) {
-          const next = await syncFlightStatus(f, port, now);
-          if (next.status !== f.status || next.depGate !== f.depGate || next.isFinished !== f.isFinished) {
-            await updateFlight(db, f.id, next);
-          }
-          synced.push(next);
-        } else {
-          synced.push(f);
-        }
-      }
-
-      setFlights(synced);
+      const port = createAeroDataBoxPort(process.env.EXPO_PUBLIC_FLIGHT_API_KEY);
+      setFlights(await refreshDueFlights(db, port, Date.now()));
     } catch {
       // Ignore background refresh errors
     } finally {
