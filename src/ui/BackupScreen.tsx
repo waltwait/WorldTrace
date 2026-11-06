@@ -1,5 +1,5 @@
-import { memo, useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { memo, useCallback, useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, Animated, Easing, ScrollView, StyleSheet, Text, View } from 'react-native';
 import {
   backUpNow,
   connect,
@@ -17,15 +17,22 @@ import { database } from '../store/database';
 import { rebuildFog } from '../store/rebuild';
 import { buildSummary } from '../store/summary';
 import { ActionButton } from './ActionButton';
+import { FadeIn } from './FadeIn';
+import { CURVE, DURATION, staggerDelay } from './motion';
 import { PressScale } from './PressScale';
 import type { ActionResult } from './actionState';
 import { formatArea } from './format';
 import { ask } from './dialog';
 import { radius, theme } from './theme';
+import { useReducedMotion } from './useReducedMotion';
 
 type Busy = 'gpx' | 'snapshot' | 'connect' | 'upload' | 'restore' | 'status' | 'rebuild' | null;
 
-export const BackupScreen = memo(function BackupScreen() {
+export const BackupScreen = memo(function BackupScreen({
+  hideTitle = false,
+}: {
+  hideTitle?: boolean;
+} = {}) {
   const [busy, setBusy] = useState<Busy>(null);
   const [cloud, setCloud] = useState<CloudStatus | null>(null);
   const [exportsOpen, setExportsOpen] = useState(false);
@@ -136,8 +143,11 @@ export const BackupScreen = memo(function BackupScreen() {
   }
 
   return (
-    <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
-      <Text style={styles.title}>備份</Text>
+    <ScrollView
+      style={styles.screen}
+      contentContainerStyle={[styles.content, hideTitle && styles.contentCompact]}
+    >
+      {!hideTitle ? <Text style={styles.title}>備份</Text> : null}
 
       <Text style={styles.sectionLabel}>Google 雲端硬碟</Text>
       <CloudPanel
@@ -173,6 +183,7 @@ export const BackupScreen = memo(function BackupScreen() {
       <ActionButton
         variant="row"
         label="重畫歷史迷霧"
+        busyLabel="重畫中…"
         disabled={busy !== null}
         onPress={() =>
           run('rebuild', async () => {
@@ -194,47 +205,85 @@ export const BackupScreen = memo(function BackupScreen() {
       {/* Folded away by default. The cloud backup is the answer for almost
           everyone almost always; these are the escape hatch for the day
           Google is the thing that broke. */}
-      <Pressable
-        style={({ pressed }) => [styles.disclosure, pressed && { opacity: 0.7 }]}
-        onPress={() => setExportsOpen((open) => !open)}
-      >
-        <Text style={styles.disclosureText}>其他匯出</Text>
-        <Text style={styles.disclosureChevron}>{exportsOpen ? '⌃' : '⌄'}</Text>
-      </Pressable>
+      <DisclosureRow open={exportsOpen} onToggle={() => setExportsOpen((open) => !open)} />
 
       {exportsOpen ? (
         <>
-          <ModeSwitch
-            mode={exportSettings.mode}
-            onChange={(mode) => changeExportSettings({ ...exportSettings, mode })}
-          />
+          <FadeIn offset={-6} delay={staggerDelay(0)}>
+            <ModeSwitch
+              mode={exportSettings.mode}
+              onChange={(mode) => changeExportSettings({ ...exportSettings, mode })}
+            />
+          </FadeIn>
 
-          <ActionButton
-            variant="row"
-            label="匯出軌跡（GPX）"
-            disabled={busy !== null}
-            onPress={() =>
-              run('gpx', async () => {
-                return deliver(await exportGpx(await database()));
-              })
-            }
-          />
+          <FadeIn offset={-6} delay={staggerDelay(1)}>
+            <ActionButton
+              variant="row"
+              label="匯出軌跡（GPX）"
+              busyLabel="匯出中…"
+              disabled={busy !== null}
+              onPress={() =>
+                run('gpx', async () => {
+                  return deliver(await exportGpx(await database()));
+                })
+              }
+            />
+          </FadeIn>
 
-          <ActionButton
-            variant="row"
-            label="匯出完整備份"
-            disabled={busy !== null}
-            onPress={() =>
-              run('snapshot', async () => {
-                return deliver(await exportSnapshot(await database()));
-              })
-            }
-          />
+          <FadeIn offset={-6} delay={staggerDelay(2)}>
+            <ActionButton
+              variant="row"
+              label="匯出完整備份"
+              busyLabel="打包中…"
+              disabled={busy !== null}
+              onPress={() =>
+                run('snapshot', async () => {
+                  return deliver(await exportSnapshot(await database()));
+                })
+              }
+            />
+          </FadeIn>
         </>
       ) : null}
     </ScrollView>
   );
 });
+
+function DisclosureRow({ open, onToggle }: { open: boolean; onToggle: () => void }) {
+  const reduced = useReducedMotion();
+  const turn = useRef(new Animated.Value(open ? 1 : 0)).current;
+
+  useEffect(() => {
+    const toValue = open ? 1 : 0;
+    if (reduced) {
+      turn.setValue(toValue);
+      return;
+    }
+
+    const animation = Animated.timing(turn, {
+      toValue,
+      duration: DURATION.enter,
+      easing: Easing.bezier(...CURVE.enter),
+      useNativeDriver: true,
+    });
+    animation.start();
+    return () => animation.stop();
+  }, [open, reduced, turn]);
+
+  const rotate = turn.interpolate({
+    inputRange: [0, 1],
+    outputRange: ['0deg', '180deg'],
+  });
+
+  return (
+    <PressScale style={styles.disclosure} onPress={onToggle} hitSlop={4}>
+      <Text style={styles.disclosureText}>其他匯出</Text>
+      <Animated.Text style={[styles.disclosureChevron, { transform: [{ rotate }] }]}>
+        ⌄
+      </Animated.Text>
+    </PressScale>
+  );
+}
 
 function CloudPanel({
   status,
@@ -273,7 +322,13 @@ function CloudPanel({
     return (
       <View style={styles.cloud}>
         <Text style={styles.cloudTitle}>尚未連結</Text>
-        <ActionButton variant="primary" label="連結 Google 帳號" disabled={busy !== null} onPress={onConnect} />
+        <ActionButton
+          variant="primary"
+          label="連結 Google 帳號"
+          busyLabel="連結中…"
+          disabled={busy !== null}
+          onPress={onConnect}
+        />
       </View>
     );
   }
@@ -296,24 +351,31 @@ function CloudPanel({
       </Text>
 
       <View style={styles.cloudActions}>
-        <ActionButton variant="primary" label="立即備份" disabled={busy !== null} onPress={onBackUp} />
+        <ActionButton
+          variant="primary"
+          label="立即備份"
+          busyLabel="備份中…"
+          disabled={busy !== null}
+          onPress={onBackUp}
+        />
         <ActionButton
           variant="secondary"
           label="從雲端還原"
+          busyLabel="還原中…"
           disabled={busy !== null || status.remote === null}
           confirm={askToRestore}
           onPress={onRestore}
         />
       </View>
 
-      <Pressable
+      <PressScale
         onPress={onDisconnect}
         disabled={busy !== null}
         hitSlop={8}
-        style={({ pressed }) => [pressed && { opacity: 0.6 }]}
+        containerStyle={styles.unlinkWrap}
       >
         <Text style={styles.unlink}>中斷連結</Text>
-      </Pressable>
+      </PressScale>
     </View>
   );
 }
@@ -356,6 +418,7 @@ function formatWhen(timestamp: number): string {
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: theme.background },
   content: { padding: 20, paddingTop: 64, paddingBottom: 40, gap: 12 },
+  contentCompact: { paddingTop: 12 },
   title: { color: theme.text, fontSize: 26, fontWeight: '700' },
   sectionLabel: {
     color: theme.textFaint,
@@ -405,5 +468,6 @@ const styles = StyleSheet.create({
   cloudTitle: { color: theme.text, fontSize: 15, fontWeight: '600' },
   cloudBody: { color: theme.textFaint, fontSize: 11, lineHeight: 17 },
   cloudActions: { flexDirection: 'row', gap: 10 },
+  unlinkWrap: { alignSelf: 'flex-start' },
   unlink: { color: theme.textFaint, fontSize: 11, textDecorationLine: 'underline' },
 });

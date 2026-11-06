@@ -12,21 +12,21 @@ import {
 } from 'react-native';
 import { autoBackUp } from './src/cloud/cloudBackup';
 import type { TrackSegment } from './src/export/gpx';
+import type { FlightRecord } from './src/flights/types';
 import { resolvePlaces } from './src/places/resolvePlaces';
 import { database } from './src/store/database';
-import { BackupScreen } from './src/ui/BackupScreen';
 import { DialogHost } from './src/ui/DialogHost';
+import { FlightsScreen } from './src/ui/FlightsScreen';
 import { MapScreen } from './src/ui/MapScreen';
 import { CURVE, DURATION } from './src/ui/motion';
 import { openTab } from './src/ui/openedTabs';
 import { pageSlide } from './src/ui/slide';
 import { useReducedMotion } from './src/ui/useReducedMotion';
-import { StatsScreen } from './src/ui/StatsScreen';
+import { ProfileScreen } from './src/ui/ProfileScreen';
 import { theme } from './src/ui/theme';
-import { TimelineScreen } from './src/ui/TimelineScreen';
 import { useRecorder } from './src/ui/useRecorder';
 
-const TABS = ['地圖', '探索', '時間軸', '備份'] as const;
+const TABS = ['Trips', 'Map', 'Profile'] as const;
 
 /**
  * Backs up in the background when the app comes to the foreground.
@@ -133,6 +133,7 @@ export default function App() {
   const [prevIndex, setPrevIndex] = useState<number | null>(null);
   const [slideDir, setSlideDir] = useState<1 | -1>(1);
   const [highlighted, setHighlighted] = useState<Highlight | null>(null);
+  const [focusedFlight, setFocusedFlight] = useState<FlightRecord | null>(null);
   // Only the map exists at launch; see openedTabs.ts for why the rest wait.
   const [opened, setOpened] = useState<ReadonlySet<number>>(() => new Set([0]));
 
@@ -201,11 +202,20 @@ export default function App() {
   );
 
   const clearHighlight = useCallback(() => setHighlighted(null), []);
+  const clearFocusedFlight = useCallback(() => setFocusedFlight(null), []);
 
   const reviewDay = useCallback(
     (label: string, segments: TrackSegment[]) => {
       setHighlighted({ label, segments });
-      goTo(0);
+      goTo(1);
+    },
+    [goTo],
+  );
+
+  const viewFlightOnMap = useCallback(
+    (flight: FlightRecord) => {
+      setFocusedFlight(flight);
+      goTo(1);
     },
     [goTo],
   );
@@ -215,12 +225,11 @@ export default function App() {
   const indicatorLeft = (tabWidth - indicatorWidth) / 2;
 
   const indicatorTranslateX = tabAnim.interpolate({
-    inputRange: [0, 1, 2, 3],
+    inputRange: [0, 1, 2],
     outputRange: [
       0 * tabWidth + indicatorLeft,
       1 * tabWidth + indicatorLeft,
       2 * tabWidth + indicatorLeft,
-      3 * tabWidth + indicatorLeft,
     ],
   });
 
@@ -238,11 +247,7 @@ export default function App() {
           slideAnim={slideAnim}
           width={width}
         >
-          <MapScreen
-            recorder={recorder}
-            highlighted={highlighted}
-            onClearHighlight={clearHighlight}
-          />
+          <FlightsScreen onViewFlightOnMap={viewFlightOnMap} />
         </SlideScreen>
         <SlideScreen
           tabIndex={1}
@@ -252,7 +257,15 @@ export default function App() {
           slideAnim={slideAnim}
           width={width}
         >
-          {opened.has(1) ? <StatsScreen recorder={recorder} active={index === 1} /> : null}
+          {opened.has(1) ? (
+            <MapScreen
+              recorder={recorder}
+              highlighted={highlighted}
+              onClearHighlight={clearHighlight}
+              focusedFlight={focusedFlight}
+              onClearFocusedFlight={clearFocusedFlight}
+            />
+          ) : null}
         </SlideScreen>
         <SlideScreen
           tabIndex={2}
@@ -262,17 +275,13 @@ export default function App() {
           slideAnim={slideAnim}
           width={width}
         >
-          {opened.has(2) ? <TimelineScreen onSelectDay={reviewDay} /> : null}
-        </SlideScreen>
-        <SlideScreen
-          tabIndex={3}
-          activeIndex={index}
-          prevIndex={prevIndex}
-          slideDir={slideDir}
-          slideAnim={slideAnim}
-          width={width}
-        >
-          {opened.has(3) ? <BackupScreen /> : null}
+          {opened.has(2) ? (
+            <ProfileScreen
+              recorder={recorder}
+              active={index === 2}
+              onSelectDay={reviewDay}
+            />
+          ) : null}
         </SlideScreen>
       </View>
 

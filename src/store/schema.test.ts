@@ -22,6 +22,8 @@ describe('migrate', () => {
 
     expect(await tableNames()).toEqual([
       'achievements',
+      'flight_docs',
+      'flights',
       'fog_tiles',
       'meta',
       'points',
@@ -111,5 +113,35 @@ describe('points table', () => {
         [999, 1, 25.0, 121.0, 8],
       ),
     ).rejects.toThrow();
+  });
+});
+
+describe('flights and flight_docs tables', () => {
+  test('cascades deletion of flight_docs when a flight is deleted', async () => {
+    await migrate(driver);
+
+    await driver.run(
+      `INSERT INTO flights (
+        id, flight_number, airline_code, airline_name, dep_iata, arr_iata,
+        dep_scheduled_utc, arr_scheduled_utc, dep_tz, arr_tz, status,
+        distance_miles, duration_minutes, notifications_enabled, is_finished, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        'fl-1', 'CI501', 'CI', 'China Airlines', 'TPE', 'PVG',
+        1767141900000, 1767149400000, 'Asia/Taipei', 'Asia/Shanghai', 'SCHEDULED',
+        420.0, 125, 0, 0, 1767000000000,
+      ],
+    );
+
+    await driver.run(
+      'INSERT INTO flight_docs (id, flight_id, file_name, local_uri, mime_type, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+      ['doc-1', 'fl-1', 'ticket.pdf', 'file:///app/ticket.pdf', 'application/pdf', 1767000000000],
+    );
+
+    expect(await driver.get<{ count: number }>('SELECT COUNT(*) as count FROM flight_docs')).toEqual({ count: 1 });
+
+    await driver.run('DELETE FROM flights WHERE id = ?', ['fl-1']);
+
+    expect(await driver.get<{ count: number }>('SELECT COUNT(*) as count FROM flight_docs')).toEqual({ count: 0 });
   });
 });

@@ -50,7 +50,14 @@
           "isAndroidForegroundServiceEnabled": true
         }
       ],
-      "expo-sharing"
+      "expo-sharing",
+      "expo-document-picker",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "WorldTrace 存取相片以讀取機票或登機證圖片。"
+        }
+      ]
     ]
   }
 }

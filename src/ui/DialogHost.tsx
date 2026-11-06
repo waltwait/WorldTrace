@@ -7,8 +7,10 @@
  */
 
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { Animated, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Animated, Easing, Modal, StyleSheet, Text, View } from 'react-native';
 import { answer, current, subscribe, type DialogRequest } from './dialog';
+import { CURVE, DURATION } from './motion';
+import { PressScale } from './PressScale';
 import { radius, theme } from './theme';
 import { useReducedMotion } from './useReducedMotion';
 
@@ -34,21 +36,19 @@ export function DialogHost() {
 
             <View style={styles.buttons}>
               {request.cancelLabel ? (
-                <Pressable
-                  style={({ pressed }) => [styles.cancel, pressed && { opacity: 0.7 }]}
+                <PressScale
+                  containerStyle={styles.buttonSlot}
+                  style={styles.cancel}
                   onPress={() => answer(request.id, false)}
                   hitSlop={4}
                 >
                   <Text style={styles.cancelText}>{request.cancelLabel}</Text>
-                </Pressable>
+                </PressScale>
               ) : null}
 
-              <Pressable
-                style={({ pressed }) => [
-                  styles.confirm,
-                  request.destructive && styles.confirmDestructive,
-                  pressed && { opacity: 0.8 },
-                ]}
+              <PressScale
+                containerStyle={styles.buttonSlot}
+                style={[styles.confirm, request.destructive && styles.confirmDestructive]}
                 onPress={() => answer(request.id, true)}
                 hitSlop={4}
               >
@@ -57,7 +57,7 @@ export function DialogHost() {
                 >
                   {request.confirmLabel}
                 </Text>
-              </Pressable>
+              </PressScale>
             </View>
           </DialogCard>
         ) : null}
@@ -67,36 +67,61 @@ export function DialogHost() {
 }
 
 /**
- * The card, springing up to meet the scrim's fade.
+ * The card, springing up and fading in to meet the scrim's fade.
  *
- * Mounted fresh per request (keyed on its id), so the scale always starts from
- * 0.9 without anyone having to rewind it. Only the entrance is animated: the
- * Modal's own fade covers the exit, and animating that out would mean holding
- * an answered dialog on screen waiting for it.
+ * Mounted fresh per request (keyed on its id), so the entrance always starts
+ * from the same offset without anyone having to rewind it. Only the entrance is
+ * animated: the Modal's own fade covers the exit, and animating that out would
+ * mean holding an answered dialog on screen waiting for it.
  */
 function DialogCard({ children }: { children: ReactNode }) {
   const reduced = useReducedMotion();
-  const scale = useRef(new Animated.Value(0.9)).current;
+  const progress = useRef(new Animated.Value(0)).current;
+  const scale = useRef(new Animated.Value(0.94)).current;
 
   useEffect(() => {
     if (reduced) {
+      progress.setValue(1);
       scale.setValue(1);
       return;
     }
 
-    const animation = Animated.spring(scale, {
-      toValue: 1,
-      tension: 180,
-      friction: 15,
-      useNativeDriver: true,
-    });
+    const animation = Animated.parallel([
+      Animated.timing(progress, {
+        toValue: 1,
+        duration: DURATION.enter,
+        easing: Easing.bezier(...CURVE.enter),
+        useNativeDriver: true,
+      }),
+      Animated.spring(scale, {
+        toValue: 1,
+        tension: 180,
+        friction: 15,
+        useNativeDriver: true,
+      }),
+    ]);
 
     animation.start();
     return () => animation.stop();
-  }, [reduced, scale]);
+  }, [progress, reduced, scale]);
+
+  const translateY = progress.interpolate({
+    inputRange: [0, 1],
+    outputRange: [12, 0],
+  });
 
   return (
-    <Animated.View style={[styles.card, { transform: [{ scale }] }]}>{children}</Animated.View>
+    <Animated.View
+      style={[
+        styles.card,
+        {
+          opacity: progress,
+          transform: [{ translateY }, { scale }],
+        },
+      ]}
+    >
+      {children}
+    </Animated.View>
   );
 }
 
@@ -122,9 +147,8 @@ const styles = StyleSheet.create({
   message: { color: theme.textFaint, fontSize: 12, lineHeight: 19 },
 
   buttons: { flexDirection: 'row', gap: 10, marginTop: 8 },
+  buttonSlot: { flexGrow: 1, flexBasis: 0 },
   cancel: {
-    flexGrow: 1,
-    flexBasis: 0,
     paddingVertical: 12,
     borderRadius: radius.card,
     borderWidth: StyleSheet.hairlineWidth,
@@ -133,8 +157,6 @@ const styles = StyleSheet.create({
   },
   cancelText: { color: theme.textMuted, fontSize: 13, fontWeight: '600' },
   confirm: {
-    flexGrow: 1,
-    flexBasis: 0,
     paddingVertical: 12,
     borderRadius: radius.card,
     backgroundColor: theme.accent,

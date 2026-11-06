@@ -121,3 +121,20 @@ export function shouldCount(change: {
 
   return true;
 }
+
+/**
+ * Whether a live number update should do a vertical flip impulse.
+ *
+ * On the map card a single step (e.g. 1.23 km -> 1.24 km) has no intermediate
+ * formatted values for count-up to pass through, so without a flip impulse the
+ * text would sit still and then snap. On arrival, count-up already runs from 0.
+ */
+export function shouldFlip(change: {
+  from: number;
+  to: number;
+  arriving: boolean;
+  format: (value: number) => string;
+}): boolean {
+  if (change.arriving) return false;
+  return shouldCount(change);
+}

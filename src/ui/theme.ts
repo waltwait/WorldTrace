@@ -16,6 +16,8 @@ export const theme = {
   textFaint: '#6f7a9c',
 
   accent: '#5b9cff',
+  accentSoft: '#252849',
+  surfaceElevated: '#1f1f23',
   live: '#4ade80',
   warn: '#ffcf8d',
   danger: '#ff9d9d',
@@ -30,6 +32,17 @@ export const theme = {
   silver: '#bcc6da',
   gold: '#e8c25a',
   tierLocked: 'rgba(255, 255, 255, 0.13)',
+
+  // Flighty / byAir tokens
+  airportSignBg: '#facc15',
+  airportSignText: '#09090b',
+  cardDark: '#161618',
+  cardDarker: '#11131a',
+  flightIndigo: '#6366f1',
+  flightArcOuter: '#38bdf8',
+  flightArcInner: '#818cf8',
+  docsBadgePurple: '#a855f7',
+  onTimeGreen: '#22c55e',
 } as const;
 
-export const radius = { panel: 20, card: 14, pill: 999 } as const;
+export const radius = { sheet: 32, panel: 20, card: 14, sign: 7, pill: 999 } as const;

@@ -12,7 +12,8 @@
 
 import { useEffect, useMemo, useSyncExternalStore } from 'react';
 import { ActivityIndicator, StyleSheet, View } from 'react-native';
-import { createActionState, runAction, type ActionResult } from './actionState';
+import { buttonLabel, createActionState, runAction, type ActionResult } from './actionState';
+import { FadeIn } from './FadeIn';
 import { PressScale } from './PressScale';
 import { SwapText } from './SwapText';
 import { radius, theme } from './theme';
@@ -22,12 +23,15 @@ type Variant = 'primary' | 'secondary' | 'row';
 export function ActionButton({
   variant,
   label,
+  busyLabel,
   disabled = false,
   confirm,
   onPress,
 }: {
   variant: Variant;
   label: string;
+  /** Shown while the work runs, so the text itself answers before completion. */
+  busyLabel?: string;
   /** True while something else is running: this button waits its turn. */
   disabled?: boolean;
   /** Asked before anything starts. No means the tap never happened. */
@@ -51,8 +55,11 @@ export function ActionButton({
 
   // A row already ends in a tick when it is done; the others carry theirs in
   // the text, since they have no other place for one.
-  const shown =
-    phase.kind !== 'done' ? label : variant === 'row' ? phase.message : `✓ ${phase.message}`;
+  const shown = buttonLabel(phase, {
+    label,
+    busyLabel,
+    tickInText: variant !== 'row',
+  });
 
   if (variant === 'row') {
     return (
@@ -88,9 +95,9 @@ export function ActionButton({
       onPress={tap}
     >
       {busy ? (
-        <View style={styles.spinner} pointerEvents="none">
-          <ActivityIndicator size="small" color={primary ? PRIMARY_INK : theme.textMuted} />
-        </View>
+        <FadeIn offset={0} style={styles.spinner}>
+          <ActivityIndicator size="small" color={primary ? PRIMARY_INK : theme.accent} />
+        </FadeIn>
       ) : null}
       <SwapText
         text={shown}
@@ -108,7 +115,7 @@ export function ActionButton({
 const PRIMARY_INK = '#04101f';
 
 const styles = StyleSheet.create({
-  grow: { flexGrow: 1 },
+  grow: { flexGrow: 1, flexBasis: 0 },
   faded: { opacity: 0.45 },
   confirmed: { color: theme.live },
 
@@ -133,10 +140,10 @@ const styles = StyleSheet.create({
   secondaryText: { color: theme.textMuted, fontSize: 13, fontWeight: '600' },
 
   // Beside the label rather than in line with it, so the label does not shift
-  // sideways when the spinner appears.
+  // sideways when the spinner appears while SwapText flips to busyLabel.
   spinner: {
     position: 'absolute',
-    left: 14,
+    left: 12,
     top: 0,
     bottom: 0,
     justifyContent: 'center',

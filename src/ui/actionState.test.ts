@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import {
   BUSY_AFTER_MS,
+  buttonLabel,
   createActionState,
   DONE_HOLD_MS,
   MIN_BUSY_MS,
@@ -349,5 +350,37 @@ describe('runAction', () => {
       await running;
       expect(kind(state)).toBe('done');
     });
+  });
+});
+
+describe('buttonLabel', () => {
+  test('shows the resting label while idle', () => {
+    expect(buttonLabel({ kind: 'idle' }, { label: '立即備份', busyLabel: '備份中…' })).toBe('立即備份');
+  });
+
+  test('swaps to busyLabel while busy so the text itself answers', () => {
+    expect(buttonLabel({ kind: 'busy' }, { label: '立即備份', busyLabel: '備份中…' })).toBe('備份中…');
+  });
+
+  test('falls back to the resting label while busy when no busyLabel is given', () => {
+    expect(buttonLabel({ kind: 'busy' }, { label: '立即備份' })).toBe('立即備份');
+  });
+
+  test('prefixes a tick in the text for primary/secondary buttons when done', () => {
+    expect(
+      buttonLabel(
+        { kind: 'done', message: '已上傳 · 3.2 MB' },
+        { label: '立即備份', busyLabel: '備份中…', tickInText: true },
+      ),
+    ).toBe('✓ 已上傳 · 3.2 MB');
+  });
+
+  test('leaves the tick out of the text for rows that have their own end slot', () => {
+    expect(
+      buttonLabel(
+        { kind: 'done', message: '已存到 WorldTrace · 1.2 MB' },
+        { label: '匯出完整備份', busyLabel: '打包中…', tickInText: false },
+      ),
+    ).toBe('已存到 WorldTrace · 1.2 MB');
   });
 });

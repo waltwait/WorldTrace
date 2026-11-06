@@ -6,6 +6,7 @@ import {
   PRESS_SCALE,
   sameShown,
   shouldCount,
+  shouldFlip,
   staggerDelay,
   STAGGER,
   SWAP_OFFSET,
@@ -158,5 +159,25 @@ describe('shouldCount', () => {
 
   it('still carries on from a nonzero value that is not an arrival', () => {
     expect(shouldCount({ from: 12.5, to: 13, arriving: false, format: area })).toBe(true);
+  });
+});
+
+describe('shouldFlip', () => {
+  const area = (value: number) => `${value.toFixed(2)} km²`;
+
+  it('flips on a live tick that changes the formatted reading', () => {
+    expect(shouldFlip({ from: 70.02, to: 70.03, arriving: false, format: area })).toBe(true);
+  });
+
+  it('does not flip when arriving on a screen, where count-up already runs', () => {
+    expect(shouldFlip({ from: 0, to: 70.02, arriving: true, format: area })).toBe(false);
+  });
+
+  it('does not flip when initial data fills in from zero on launch', () => {
+    expect(shouldFlip({ from: 0, to: 70.02, arriving: false, format: area })).toBe(false);
+  });
+
+  it('does not flip when the formatted text is unchanged', () => {
+    expect(shouldFlip({ from: 70.021, to: 70.024, arriving: false, format: area })).toBe(false);
   });
 });

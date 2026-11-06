@@ -170,3 +170,18 @@ export async function runAction(
     throw error;
   }
 }
+
+/**
+ * What text the button should show for its current phase.
+ *
+ * When a `busyLabel` is given (e.g. "備份中…"), entering the busy phase swaps
+ * the text itself so the eye sees the button answer even before the work ends.
+ */
+export function buttonLabel(
+  phase: ActionPhase,
+  options: { label: string; busyLabel?: string; tickInText?: boolean },
+): string {
+  if (phase.kind === 'idle') return options.label;
+  if (phase.kind === 'busy') return options.busyLabel ?? options.label;
+  return options.tickInText ? `✓ ${phase.message}` : phase.message;
+}

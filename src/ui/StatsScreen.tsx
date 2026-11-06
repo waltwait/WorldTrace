@@ -21,9 +21,11 @@ import type { RecorderState } from './useRecorder';
 export const StatsScreen = memo(function StatsScreen({
   recorder,
   active,
+  hideTitle = false,
 }: {
   recorder: RecorderState;
   active: boolean;
+  hideTitle?: boolean;
 }) {
   const [summary, setSummary] = useState<Summary | null>(() => getCachedSummary());
   const [run, setRun] = useState(0);
@@ -82,8 +84,11 @@ export const StatsScreen = memo(function StatsScreen({
   const landmark = compareToLandmark(summary.exploredSquareMeters);
 
   return (
-    <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
-      <Text style={styles.title}>探索</Text>
+    <ScrollView
+      style={styles.screen}
+      contentContainerStyle={[styles.content, hideTitle && styles.contentCompact]}
+    >
+      {!hideTitle ? <Text style={styles.title}>探索</Text> : null}
 
       <View style={styles.levelCard}>
         <View style={styles.levelHeader}>
@@ -345,6 +350,7 @@ function formatDay(timestamp: number | null): string {
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: theme.background },
   content: { padding: 20, paddingTop: 64, paddingBottom: 40, gap: 14 },
+  contentCompact: { paddingTop: 12 },
   empty: { flex: 1, backgroundColor: theme.background, alignItems: 'center', justifyContent: 'center' },
   emptyText: { color: theme.textFaint },
 

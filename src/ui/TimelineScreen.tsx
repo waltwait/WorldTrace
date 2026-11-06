@@ -11,9 +11,13 @@ import { radius, theme } from './theme';
 export interface TimelineScreenProps {
   /** Hand a day's track to the map for review. */
   onSelectDay: (label: string, segments: TrackSegment[]) => void;
+  hideTitle?: boolean;
 }
 
-export const TimelineScreen = memo(function TimelineScreen({ onSelectDay }: TimelineScreenProps) {
+export const TimelineScreen = memo(function TimelineScreen({
+  onSelectDay,
+  hideTitle = false,
+}: TimelineScreenProps) {
   const [days, setDays] = useState<TrackDay[] | null>(() => getCachedDays());
   const [busy, setBusy] = useState<string | null>(null);
 
@@ -83,7 +87,7 @@ export const TimelineScreen = memo(function TimelineScreen({ onSelectDay }: Time
   return (
     <FlatList
       style={styles.screen}
-      contentContainerStyle={styles.content}
+      contentContainerStyle={[styles.content, hideTitle && styles.contentCompact]}
       data={days ?? []}
       keyExtractor={(day) => day.date}
       renderItem={renderDay}
@@ -93,8 +97,8 @@ export const TimelineScreen = memo(function TimelineScreen({ onSelectDay }: Time
       windowSize={7}
       maxToRenderPerBatch={8}
       ListHeaderComponent={
-        <View style={styles.header}>
-          <Text style={styles.title}>時間軸</Text>
+        <View style={[styles.header, hideTitle && styles.headerCompact]}>
+          {!hideTitle ? <Text style={styles.title}>時間軸</Text> : null}
 
           {days === null ? <Text style={styles.hint}>讀取中…</Text> : null}
 
@@ -124,7 +128,9 @@ function formatSpan(from: number, to: number): string {
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: theme.background },
   content: { padding: 20, paddingTop: 64, paddingBottom: 40 },
+  contentCompact: { paddingTop: 12 },
   header: { gap: 10, marginBottom: 14 },
+  headerCompact: { marginBottom: 6 },
   separator: { height: 10 },
   title: { color: theme.text, fontSize: 26, fontWeight: '700', marginBottom: 4 },
   hint: { color: theme.textFaint, fontSize: 13, lineHeight: 20 },

@@ -4,17 +4,25 @@ import {
   Layer,
   Map,
   UserLocation,
+  type CameraRef,
   type MapRef,
 } from '@maplibre/maplibre-react-native';
 import type { StyleSpecification } from '@maplibre/maplibre-gl-style-spec';
-import { memo, useCallback, useMemo, useRef } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { StyleSheet, Text, View } from 'react-native';
 import type { TrackSegment } from '../export/gpx';
+import { findAirport } from '../flights/airports';
+import { buildFlightArcsGeoJson } from '../flights/greatCircle';
+import type { FlightRecord } from '../flights/types';
+import { database } from '../store/database';
+import { listFlights } from '../store/flights';
 import { compareToLandmark, formatEarthShare } from './earth';
 import { FadeIn } from './FadeIn';
 import { DURATION } from './motion';
 import { formatArea, formatDistance } from './format';
+import { PressScale } from './PressScale';
 import { RollingNumber } from './RollingNumber';
+import { SwapText } from './SwapText';
 import { radius, theme } from './theme';
 import { useFog } from './useFog';
 import type { RecorderState } from './useRecorder';
@@ -39,13 +47,58 @@ export interface MapScreenProps {
   /** A past day being reviewed, drawn over the fog. */
   highlighted: { label: string; segments: TrackSegment[] } | null;
   onClearHighlight: () => void;
+  focusedFlight?: FlightRecord | null;
+  onClearFocusedFlight?: () => void;
 }
 
 export const MapScreen = memo(function MapScreen({
   recorder,
   highlighted,
   onClearHighlight,
+  focusedFlight,
+  onClearFocusedFlight,
 }: MapScreenProps) {
+  const [mapLayerMode, setMapLayerMode] = useState<'all' | 'fog' | 'flights'>('all');
+  const [flights, setFlights] = useState<FlightRecord[]>([]);
+  const cameraRef = useRef<CameraRef>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const db = await database();
+        const all = await listFlights(db);
+        if (!cancelled) setFlights(all);
+      } catch {
+        // Ignore background fetch error
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!focusedFlight) return;
+    if (mapLayerMode === 'fog') {
+      setMapLayerMode('all');
+    }
+    const dep = findAirport(focusedFlight.depIata);
+    const arr = findAirport(focusedFlight.arrIata);
+    if (dep && arr) {
+      const minLon = Math.min(dep.lon, arr.lon);
+      const maxLon = Math.max(dep.lon, arr.lon);
+      const minLat = Math.min(dep.lat, arr.lat);
+      const maxLat = Math.max(dep.lat, arr.lat);
+      cameraRef.current?.fitBounds([minLon, minLat, maxLon, maxLat], {
+        padding: { top: 120, bottom: 140, left: 60, right: 60 },
+        duration: 1200,
+      });
+    }
+  }, [focusedFlight]);
+
+  const flightArcs = useMemo(() => buildFlightArcsGeoJson(flights), [flights]);
+
   const trackLines = useMemo(() => {
     if (!highlighted) return null;
 
@@ -100,8 +153,9 @@ export const MapScreen = memo(function MapScreen({
             which makes a fog map much harder to read — you lose track of which
             way the cleared ground runs. Rotating by hand still works. */}
         <Camera
+          ref={cameraRef}
           initialViewState={{ center: INITIAL_CENTER, zoom: 15, bearing: 0 }}
-          trackUserLocation={highlighted ? undefined : 'default'}
+          trackUserLocation={highlighted || focusedFlight ? undefined : 'default'}
           maxZoom={18}
         />
         <UserLocation />
@@ -115,17 +169,44 @@ export const MapScreen = memo(function MapScreen({
             polygons (see fog/fogPartition.ts). Antialiasing draws a line along
             every polygon edge in the fill's own translucent colour, so two
             polygons sharing an edge would draw it twice, darker, as a seam. */}
-        <GeoJSONSource id="fog" data={fog} maxzoom={18} tolerance={0}>
-          <Layer
-            id="fog-fill"
-            type="fill"
-            paint={{
-              'fill-color': theme.fog,
-              'fill-opacity': theme.fogOpacity,
-              'fill-antialias': false,
-            }}
-          />
-        </GeoJSONSource>
+        {mapLayerMode !== 'flights' ? (
+          <GeoJSONSource id="fog" data={fog} maxzoom={18} tolerance={0}>
+            <Layer
+              id="fog-fill"
+              type="fill"
+              paint={{
+                'fill-color': theme.fog,
+                'fill-opacity': theme.fogOpacity,
+                'fill-antialias': false,
+              }}
+            />
+          </GeoJSONSource>
+        ) : null}
+
+        {flightArcs && mapLayerMode !== 'fog' && flightArcs.features.length > 0 ? (
+          <GeoJSONSource id="flight-arcs" data={flightArcs} maxzoom={18}>
+            <Layer
+              id="flight-arcs-outer"
+              type="line"
+              layout={{ 'line-cap': 'round', 'line-join': 'round' }}
+              paint={{
+                'line-color': theme.flightArcOuter,
+                'line-width': 5,
+                'line-opacity': 0.6,
+              }}
+            />
+            <Layer
+              id="flight-arcs-inner"
+              type="line"
+              layout={{ 'line-cap': 'round', 'line-join': 'round' }}
+              paint={{
+                'line-color': theme.flightArcInner,
+                'line-width': 2.5,
+                'line-opacity': 0.95,
+              }}
+            />
+          </GeoJSONSource>
+        ) : null}
 
         {trackLines ? (
           <GeoJSONSource id="day-track" data={trackLines} maxzoom={18}>
@@ -139,6 +220,42 @@ export const MapScreen = memo(function MapScreen({
         ) : null}
       </Map>
 
+      {/* Layer Mode Selector: All (雙層) | Fog (迷霧) | Flights (航線) */}
+      <View style={styles.layerSelector}>
+        {(['all', 'fog', 'flights'] as const).map((mode) => (
+          <PressScale
+            key={mode}
+            style={[styles.layerBtn, mapLayerMode === mode && styles.layerBtnActive]}
+            onPress={() => setMapLayerMode(mode)}
+          >
+            <Text
+              style={[
+                styles.layerBtnText,
+                mapLayerMode === mode && styles.layerBtnTextActive,
+              ]}
+            >
+              {mode === 'all' ? '雙層' : mode === 'fog' ? '迷霧' : '航線'}
+            </Text>
+          </PressScale>
+        ))}
+      </View>
+
+      {focusedFlight ? (
+        <FadeIn
+          key={focusedFlight.id}
+          style={styles.highlightAnchor}
+          offset={-8}
+          delay={DURATION.page}
+        >
+          <PressScale style={styles.highlightBanner} onPress={onClearFocusedFlight}>
+            <Text style={styles.highlightText}>
+              ✈️ {focusedFlight.flightNumber} · {focusedFlight.depIata} → {focusedFlight.arrIata}
+            </Text>
+            <Text style={styles.highlightDismiss}>返回即時 ✕</Text>
+          </PressScale>
+        </FadeIn>
+      ) : null}
+
       {highlighted ? (
         // Keyed on the day so picking another one plays the entrance again.
         // Delayed past the page slide: one thing moves at a time.
@@ -148,13 +265,10 @@ export const MapScreen = memo(function MapScreen({
           offset={-8}
           delay={DURATION.page}
         >
-          <Pressable
-            style={({ pressed }) => [styles.highlightBanner, pressed && { opacity: 0.8 }]}
-            onPress={onClearHighlight}
-          >
+          <PressScale style={styles.highlightBanner} onPress={onClearHighlight}>
             <Text style={styles.highlightText}>{highlighted.label} 的軌跡</Text>
             <Text style={styles.highlightDismiss}>返回即時 ✕</Text>
-          </Pressable>
+          </PressScale>
         </FadeIn>
       ) : null}
 
@@ -183,10 +297,12 @@ export const MapScreen = memo(function MapScreen({
           </View>
         </View>
 
-        <Text style={styles.earth}>
-          佔地球表面 {formatEarthShare(recorder.exploredSquareMeters)}
-          {landmark ? `　·　${landmark}` : ''}
-        </Text>
+        <SwapText
+          text={`佔地球表面 ${formatEarthShare(recorder.exploredSquareMeters)}${
+            landmark ? `　·　${landmark}` : ''
+          }`}
+          style={styles.earth}
+        />
 
         {/* The native attribution button was turned off because its dialog
             covered the map. OpenStreetMap's tile policy still requires a
@@ -229,6 +345,36 @@ function StatusPill({ state }: { state: RecorderState }) {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: theme.background },
   map: { flex: 1 },
+
+  layerSelector: {
+    position: 'absolute',
+    top: 56,
+    right: 16,
+    flexDirection: 'row',
+    backgroundColor: 'rgba(9, 14, 28, 0.88)',
+    borderRadius: radius.pill,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.border,
+    padding: 3,
+    gap: 2,
+    zIndex: 10,
+  },
+  layerBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: radius.pill,
+  },
+  layerBtnActive: {
+    backgroundColor: theme.flightIndigo,
+  },
+  layerBtnText: {
+    color: theme.textFaint,
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  layerBtnTextActive: {
+    color: '#ffffff',
+  },
 
   highlightAnchor: {
     position: 'absolute',
