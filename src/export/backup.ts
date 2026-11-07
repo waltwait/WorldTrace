@@ -17,6 +17,7 @@ import type { SqlDriver } from '../store/driver';
 import { DATABASE_NAME } from '../store/expoDriver';
 import { loadTrack } from '../store/track';
 import { buildGpx } from './gpx';
+import { mimeOf } from './saveToFolder';
 
 /** Where expo-sqlite keeps databases. */
 function databaseFile(): File {
@@ -97,7 +98,7 @@ export async function share(result: ExportResult): Promise<void> {
 
   await Sharing.shareAsync(result.uri, {
     dialogTitle: result.fileName,
-    mimeType: result.fileName.endsWith('.gpx') ? 'application/gpx+xml' : 'application/octet-stream',
+    mimeType: mimeOf(result.fileName),
   });
 }
 

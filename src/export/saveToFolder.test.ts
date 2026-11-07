@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import { DOWNLOADS_FOLDER_HINT } from './exportSettings';
-import { isPickerCancelled, saveToFolder, type FolderPort } from './saveToFolder';
+import { isPickerCancelled, mimeOf, saveToFolder, type FolderPort } from './saveToFolder';
 
 const FILE = { uri: 'file:///cache/worldtrace-x.db', fileName: 'worldtrace-x.db', bytes: 2048 };
 const DOWNLOADS = 'content://p/tree/primary%3ADownload%2FWorldTrace';
@@ -86,9 +86,14 @@ describe('saveToFolder', () => {
 
       await saveToFolder(port, DOWNLOADS, FILE);
       await saveToFolder(port, DOWNLOADS, { ...FILE, fileName: 'worldtrace-x.gpx' });
+      await saveToFolder(port, DOWNLOADS, { ...FILE, fileName: 'worldtrace-trip-2026-04-02-9x16.png' });
 
       expect(writes[0]).toMatchObject({ name: 'worldtrace-x.db', mime: 'application/octet-stream', source: FILE.uri });
       expect(writes[1]).toMatchObject({ name: 'worldtrace-x.gpx', mime: 'application/gpx+xml' });
+      expect(writes[2]).toMatchObject({
+        name: 'worldtrace-trip-2026-04-02-9x16.png',
+        mime: 'image/png',
+      });
     });
 
     // Permission belongs to an install, and the folder to a place that can be
@@ -165,5 +170,14 @@ describe('isPickerCancelled', () => {
     expect(isPickerCancelled(undefined)).toBe(false);
     expect(isPickerCancelled('cancelled')).toBe(false);
     expect(isPickerCancelled(null)).toBe(false);
+  });
+});
+
+describe('mimeOf', () => {
+  test('recognises GPX, PNG and falls back to octet-stream', () => {
+    expect(mimeOf('worldtrace-2026.gpx')).toBe('application/gpx+xml');
+    expect(mimeOf('worldtrace-trip-2026-04-02-9x16.png')).toBe('image/png');
+    expect(mimeOf('WORLDTRACE.PNG')).toBe('image/png');
+    expect(mimeOf('worldtrace-2026.db')).toBe('application/octet-stream');
   });
 });

@@ -24,8 +24,11 @@ export interface FolderPort {
 
 export type SaveResult = { saved: true; folderUri: string } | { saved: false };
 
-function mimeOf(fileName: string): string {
-  return fileName.endsWith('.gpx') ? 'application/gpx+xml' : 'application/octet-stream';
+export function mimeOf(fileName: string): string {
+  const lower = fileName.toLowerCase();
+  if (lower.endsWith('.gpx')) return 'application/gpx+xml';
+  if (lower.endsWith('.png')) return 'image/png';
+  return 'application/octet-stream';
 }
 
 /**

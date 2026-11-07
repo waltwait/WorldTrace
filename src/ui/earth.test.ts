@@ -1,5 +1,9 @@
 import { describe, expect, test } from 'vitest';
-import { EARTH_SURFACE_SQUARE_METERS, compareToLandmark, formatEarthShare } from './earth';
+import {
+  EARTH_SURFACE_SQUARE_METERS,
+  compareToLandmark,
+  formatEarthShare,
+} from './earth';
 
 describe('formatEarthShare', () => {
   test('is zero before anything has been explored', () => {
