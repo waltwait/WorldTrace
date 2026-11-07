@@ -10,20 +10,24 @@ import {
 } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
 import * as Sharing from 'expo-sharing';
-import { findAirport, getArrivalTimezoneSummary } from '../flights/airports';
-import { airportDate, airportTime } from '../flights/flightDisplay';
+import { flagEmoji } from '../flights/countries';
+import { airportDate, airportLabel, airportTime, statusLabel } from '../flights/flightDisplay';
 import {
   createAeroDataBoxPort,
   syncFlightStatus,
 } from '../flights/flightStatusApi';
 import type { FlightDocRecord, FlightRecord } from '../flights/types';
+import { arrivalTimeDifference } from '../flights/zonedTime';
+import { apiKey } from '../settings/expoKeyStore';
 import { database } from '../store/database';
 import { expoDocFiles } from '../store/expoDocFiles';
 import { attachFlightDoc, deleteFlightAndDocs, removeFlightDoc } from '../store/flightDocs';
+import { saveSyncedFlight } from '../store/flightRefresh';
 import { listFlightDocs, updateFlight } from '../store/flights';
 import { ActionButton } from './ActionButton';
 import { PressScale } from './PressScale';
 import { ask } from './dialog';
+import { formatFlightDistance } from './format';
 import { radius, theme } from './theme';
 
 interface FlightDetailSheetProps {
@@ -74,7 +78,6 @@ function FlightDetailContent({
   const [depGateInput, setDepGateInput] = useState('');
   const [arrGateInput, setArrGateInput] = useState('');
   const [baggageInput, setBaggageInput] = useState('');
-  const [pnrEnlarged, setPnrEnlarged] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -88,27 +91,24 @@ function FlightDetailContent({
       }
     })();
 
-    setDepGateInput(flight.depGate ?? '');
-    setArrGateInput(flight.arrGate ?? '');
-    setBaggageInput(flight.baggageBelt ?? '');
     setEditingGate(false);
-    setPnrEnlarged(false);
 
     return () => {
       cancelled = true;
     };
   }, [flight.id]);
 
-  const depAirport = findAirport(flight.depIata);
-  const arrAirport = findAirport(flight.arrIata);
-  const tzSummary = getArrivalTimezoneSummary(
-    flight.depIata,
-    flight.arrIata,
-    // The offsets on the day of the flight, not today: across a daylight-
-    // saving change the difference is an hour out otherwise.
-    new Date(flight.depScheduledUtc),
-  );
+  // On the values as well as the id: a sync changes them under an open sheet,
+  // and saving the old text in these boxes would wipe what it found.
+  useEffect(() => {
+    setDepGateInput(flight.depGate ?? '');
+    setArrGateInput(flight.arrGate ?? '');
+    setBaggageInput(flight.baggageBelt ?? '');
+  }, [flight.id, flight.depGate, flight.arrGate, flight.baggageBelt]);
 
+  // The offsets on the day of the flight, not today: across a daylight-saving
+  // change the difference is an hour out otherwise.
+  const timeDifference = arrivalTimeDifference(flight.depTz, flight.arrTz, flight.depScheduledUtc);
 
   const toggleFinished = useCallback(async () => {
     try {
@@ -128,15 +128,17 @@ function FlightDetailContent({
 
   const handleSyncStatus = useCallback(async () => {
     try {
-      const apiKey = process.env.EXPO_PUBLIC_FLIGHT_API_KEY;
-      const port = createAeroDataBoxPort(apiKey);
+      const port = createAeroDataBoxPort((await apiKey('flightStatus')) ?? undefined);
       const updated = await syncFlightStatus(flight, port, Date.now());
+      if (updated === flight) {
+        return { ok: true as const, message: '目前查不到最新動態' };
+      }
       const db = await database();
-      await updateFlight(db, flight.id, updated);
+      await saveSyncedFlight(db, flight, updated);
       onFlightUpdated(updated);
       return {
         ok: true as const,
-        message: `航班狀態：${updated.status}${updated.depGate ? ` · Gate ${updated.depGate}` : ''}`,
+        message: `航班狀態：${statusLabel(updated)}${updated.depGate ? ` · 登機門 ${updated.depGate}` : ''}`,
       };
     } catch (error) {
       return failed('同步失敗', error);
@@ -200,12 +202,17 @@ function FlightDetailContent({
   }, [flight.id]);
 
   const handleOpenDoc = useCallback(async (doc: FlightDocRecord) => {
-    const isAvail = await Sharing.isAvailableAsync();
-    if (isAvail) {
+    try {
+      if (!(await Sharing.isAvailableAsync())) {
+        throw new Error('這台裝置無法開啟檔案');
+      }
       await Sharing.shareAsync(doc.localUri, {
         mimeType: doc.mimeType,
         dialogTitle: doc.fileName,
       });
+    } catch (error) {
+      // Restored from a backup, the row is here and the file is not.
+      await failed('無法開啟檔案', error);
     }
   }, []);
 
@@ -221,9 +228,13 @@ function FlightDetailContent({
 
       if (!confirmed) return;
 
-      const db = await database();
-      await removeFlightDoc(db, expoDocFiles, doc);
-      setDocs((prev) => prev.filter((d) => d.id !== doc.id));
+      try {
+        const db = await database();
+        await removeFlightDoc(db, expoDocFiles, doc);
+        setDocs((prev) => prev.filter((d) => d.id !== doc.id));
+      } catch (error) {
+        await failed('無法刪除檔案', error);
+      }
     },
     [],
   );
@@ -239,10 +250,14 @@ function FlightDetailContent({
 
     if (!confirmed) return;
 
-    const db = await database();
-    await deleteFlightAndDocs(db, expoDocFiles, flight.id);
-    onFlightDeleted(flight.id);
-    onClose();
+    try {
+      const db = await database();
+      await deleteFlightAndDocs(db, expoDocFiles, flight.id);
+      onFlightDeleted(flight.id);
+      onClose();
+    } catch (error) {
+      await failed('無法刪除航班', error);
+    }
   }, [flight, onFlightDeleted, onClose]);
 
   return (
@@ -265,12 +280,13 @@ function FlightDetailContent({
                   ]}
                 >
                   <Text style={styles.statusBadgeText}>
-                    {flight.isFinished ? 'FINISHED' : flight.status}
+                    {statusLabel(flight)}
                   </Text>
                 </View>
               </View>
               <Text style={styles.headerRoute}>
-                {depAirport?.cityZh ?? flight.depIata} → {arrAirport?.cityZh ?? flight.arrIata} ·{' '}
+                {airportLabel(flight.depCity, flight.depIata)} →{' '}
+                {airportLabel(flight.arrCity, flight.arrIata)} ·{' '}
                 {airportDate(flight.depScheduledUtc, flight.depTz)}
               </Text>
             </View>
@@ -284,10 +300,10 @@ function FlightDetailContent({
             <View style={styles.card}>
               <View style={styles.airportsRow}>
                 <View style={styles.airportCol}>
-                  <Text style={styles.airportFlag}>{depAirport?.flagEmoji ?? '✈️'}</Text>
+                  <Text style={styles.airportFlag}>{flagEmoji(flight.depCountry) || '✈️'}</Text>
                   <Text style={styles.airportIata}>{flight.depIata}</Text>
                   <Text style={styles.timeText}>{airportTime(flight.depScheduledUtc, flight.depTz)}</Text>
-                  <Text style={styles.cityText}>{depAirport?.city ?? flight.depIata}</Text>
+                  <Text style={styles.cityText}>{flight.depCity}</Text>
 
                   {/* Airport Yellow Sign Badge */}
                   <PressScale
@@ -295,24 +311,24 @@ function FlightDetailContent({
                     onPress={() => setEditingGate((v) => !v)}
                   >
                     <Text style={styles.signBadgeText}>
-                      ↗ Gate {flight.depGate ?? '—'}
+                      ↗ 登機門 {flight.depGate ?? '—'}
                     </Text>
                   </PressScale>
                 </View>
 
                 <View style={styles.flightMiddleCol}>
                   <Text style={styles.durationText}>
-                    {Math.floor(flight.durationMinutes / 60)}h {flight.durationMinutes % 60}m
+                    {Math.floor(flight.durationMinutes / 60)} 小時 {flight.durationMinutes % 60} 分
                   </Text>
                   <View style={styles.routeLine} />
-                  <Text style={styles.milesText}>{flight.distanceMiles} mi</Text>
+                  <Text style={styles.milesText}>{formatFlightDistance(flight.distanceKm)}</Text>
                 </View>
 
                 <View style={[styles.airportCol, styles.alignRight]}>
-                  <Text style={styles.airportFlag}>{arrAirport?.flagEmoji ?? '🛬'}</Text>
+                  <Text style={styles.airportFlag}>{flagEmoji(flight.arrCountry) || '🛬'}</Text>
                   <Text style={styles.airportIata}>{flight.arrIata}</Text>
                   <Text style={styles.timeText}>{airportTime(flight.arrScheduledUtc, flight.arrTz)}</Text>
-                  <Text style={styles.cityText}>{arrAirport?.city ?? flight.arrIata}</Text>
+                  <Text style={styles.cityText}>{flight.arrCity}</Text>
 
                   {/* Airport Yellow Sign Badge */}
                   <PressScale
@@ -320,7 +336,7 @@ function FlightDetailContent({
                     onPress={() => setEditingGate((v) => !v)}
                   >
                     <Text style={styles.signBadgeText}>
-                      ↘ Gate {flight.arrGate ?? '—'}
+                      ↘ 登機門 {flight.arrGate ?? '—'}
                     </Text>
                   </PressScale>
                 </View>
@@ -333,17 +349,16 @@ function FlightDetailContent({
                 >
                   <Text style={styles.baggageIcon}>🧳</Text>
                   <Text style={styles.baggageText}>
-                    行李轉盤 (Baggage Claim)：{flight.baggageBelt} 號
+                    行李轉盤：{flight.baggageBelt} 號
                   </Text>
                 </PressScale>
               ) : null}
 
               {editingGate ? (
                 <View style={styles.gateEditorBox}>
-                  <Text style={styles.gateEditorTitle}>✏️ 快速更新登機門與行李轉盤</Text>
                   <View style={styles.gateEditorInputs}>
                     <View style={styles.flex1}>
-                      <Text style={styles.editorLabel}>起飛 Gate</Text>
+                      <Text style={styles.editorLabel}>起飛登機門</Text>
                       <TextInput
                         style={styles.gateInput}
                         value={depGateInput}
@@ -354,7 +369,7 @@ function FlightDetailContent({
                       />
                     </View>
                     <View style={styles.flex1}>
-                      <Text style={styles.editorLabel}>抵達 Gate</Text>
+                      <Text style={styles.editorLabel}>抵達登機門</Text>
                       <TextInput
                         style={styles.gateInput}
                         value={arrGateInput}
@@ -391,7 +406,7 @@ function FlightDetailContent({
                   onViewOnMap?.(flight);
                 }}
               >
-                <Text style={styles.viewOnMapText}>🗺️ 在地圖上查看此航線</Text>
+                <Text style={styles.viewOnMapText}>🗺️ 在地圖上查看</Text>
               </PressScale>
             </View>
 
@@ -399,48 +414,26 @@ function FlightDetailContent({
             <View style={styles.syncRow}>
               <ActionButton
                 variant="secondary"
-                label="🔄 檢查最新航班動態"
+                label="🔄 更新動態"
                 busyLabel="查詢中…"
                 onPress={handleSyncStatus}
               />
             </View>
 
-            {/* Flight Details: Airline, Seat, PNR, Notes */}
+            {/* Flight Details: Airline, Seat, Notes */}
             <View style={styles.card}>
               <View style={styles.detailRow}>
                 <Text style={styles.detailLabel}>航空公司</Text>
-                <Text style={styles.detailValue}>
-                  {flight.airlineName} {flight.alliance ? `· ${flight.alliance}` : ''}
-                </Text>
+                <Text style={styles.detailValue}>{flight.airlineName}</Text>
               </View>
 
-              <View style={styles.divider} />
-
-              <View style={styles.detailRow}>
-                <Text style={styles.detailLabel}>座位 (Seat)</Text>
-                <Text style={styles.detailValue}>{flight.seat ?? '未指定'}</Text>
-              </View>
-
-              {flight.pnr ? (
+              {flight.seat ? (
                 <>
                   <View style={styles.divider} />
-                  <PressScale
-                    style={styles.detailRow}
-                    onPress={() => setPnrEnlarged((v) => !v)}
-                  >
-                    <Text style={styles.detailLabel}>訂位代號 (PNR)</Text>
-                    <View style={styles.pnrBadge}>
-                      <Text style={styles.pnrHighlight}>{flight.pnr}</Text>
-                      <Text style={styles.pnrZoomHint}>🔍 放大</Text>
-                    </View>
-                  </PressScale>
-
-                  {pnrEnlarged ? (
-                    <View style={styles.pnrEnlargedBox}>
-                      <Text style={styles.pnrEnlargedLabel}>出示給地勤人員快速報到：</Text>
-                      <Text style={styles.pnrEnlargedCode}>{flight.pnr}</Text>
-                    </View>
-                  ) : null}
+                  <View style={styles.detailRow}>
+                    <Text style={styles.detailLabel}>座位</Text>
+                    <Text style={styles.detailValue}>{flight.seat}</Text>
+                  </View>
                 </>
               ) : null}
 
@@ -471,11 +464,7 @@ function FlightDetailContent({
                 </PressScale>
               </View>
 
-              {docs.length === 0 ? (
-                <Text style={styles.emptyDocsText}>
-                  尚未附加機票 PDF 或相片，點擊右上角新增。
-                </Text>
-              ) : (
+              {docs.length > 0 ? (
                 <View style={styles.docsList}>
                   {docs.map((doc) => (
                     <View key={doc.id} style={styles.docItem}>
@@ -490,7 +479,6 @@ function FlightDetailContent({
                           <Text style={styles.docName} numberOfLines={1}>
                             {doc.fileName}
                           </Text>
-                          <Text style={styles.docDate}>點擊預覽與分享</Text>
                         </View>
                       </PressScale>
                       <PressScale
@@ -503,18 +491,16 @@ function FlightDetailContent({
                     </View>
                   ))}
                 </View>
-              )}
+              ) : null}
             </View>
 
-            {/* On Arrival Timezone Card */}
-            <View style={styles.card}>
-              <Text style={styles.tzSectionTitle}>抵達當地 (On Arrival)</Text>
-              <Text style={styles.tzHeadline}>{tzSummary.headline}</Text>
-              <Text style={styles.tzDesc}>{tzSummary.description}</Text>
-              <View style={styles.tzBadgeContainer}>
-                <Text style={styles.tzBadge}>{tzSummary.badge}</Text>
+            {/* Only when there is something to adjust to. */}
+            {timeDifference.hasDifference ? (
+              <View style={styles.card}>
+                <Text style={styles.tzSectionTitle}>抵達當地</Text>
+                <Text style={styles.tzHeadline}>{timeDifference.headline}</Text>
               </View>
-            </View>
+            ) : null}
 
             {/* Action Buttons */}
             <View style={styles.bottomActions}>
@@ -726,11 +712,6 @@ const styles = StyleSheet.create({
     gap: 10,
     marginTop: 4,
   },
-  gateEditorTitle: {
-    color: theme.textMuted,
-    fontSize: 12,
-    fontWeight: '700',
-  },
   gateEditorInputs: {
     flexDirection: 'row',
     gap: 8,
@@ -776,43 +757,6 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
   },
-  pnrBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  pnrHighlight: {
-    color: '#38bdf8',
-    fontSize: 14,
-    fontWeight: '800',
-    letterSpacing: 1,
-  },
-  pnrZoomHint: {
-    color: theme.textFaint,
-    fontSize: 10,
-    fontWeight: '600',
-  },
-  pnrEnlargedBox: {
-    backgroundColor: 'rgba(56, 189, 248, 0.1)',
-    borderRadius: radius.card,
-    padding: 14,
-    alignItems: 'center',
-    gap: 6,
-    borderWidth: 1,
-    borderColor: 'rgba(56, 189, 248, 0.3)',
-    marginTop: 4,
-  },
-  pnrEnlargedLabel: {
-    color: '#bae6fd',
-    fontSize: 11,
-    fontWeight: '600',
-  },
-  pnrEnlargedCode: {
-    color: '#ffffff',
-    fontSize: 32,
-    fontWeight: '900',
-    letterSpacing: 6,
-  },
   notesText: {
     color: theme.textMuted,
     fontSize: 12,
@@ -852,11 +796,6 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
   },
-  emptyDocsText: {
-    color: theme.textFaint,
-    fontSize: 12,
-    fontStyle: 'italic',
-  },
   docsList: {
     gap: 8,
   },
@@ -885,10 +824,6 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
   },
-  docDate: {
-    color: theme.textFaint,
-    fontSize: 10,
-  },
   docDeleteBtn: {
     padding: 6,
   },
@@ -906,24 +841,6 @@ const styles = StyleSheet.create({
   tzHeadline: {
     color: theme.text,
     fontSize: 15,
-    fontWeight: '800',
-  },
-  tzDesc: {
-    color: theme.textMuted,
-    fontSize: 12,
-  },
-  tzBadgeContainer: {
-    alignSelf: 'flex-start',
-    backgroundColor: theme.surfaceElevated,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: radius.sign,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.border,
-  },
-  tzBadge: {
-    color: theme.text,
-    fontSize: 11,
     fontWeight: '800',
   },
   bottomActions: {

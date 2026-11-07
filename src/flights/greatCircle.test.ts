@@ -1,10 +1,10 @@
 import { describe, expect, test } from 'vitest';
-import { findAirport } from './airports';
 import {
   routesKey,
   buildFlightArcsGeoJson,
   buildGreatCircleArc,
-  calculateFlightMiles,
+  calculateFlightKm,
+  flightEnds,
 } from './greatCircle';
 
 describe('greatCircle', () => {
@@ -13,30 +13,21 @@ describe('greatCircle', () => {
   const NRT = { lat: 35.772, lon: 140.3929 };
   const LAX = { lat: 33.9416, lon: -118.4085 };
 
-  describe('calculateFlightMiles', () => {
-    test('calculates correct approximate distance between TPE and PVG', () => {
-      const miles = calculateFlightMiles(TPE, PVG);
-      // TPE to PVG is ~420 to 425 miles
-      expect(miles).toBeGreaterThan(415);
-      expect(miles).toBeLessThan(430);
+  describe('calculateFlightKm', () => {
+    test('TPE to PVG is about 680 km', () => {
+      const km = calculateFlightKm(TPE, PVG);
+      expect(km).toBeGreaterThan(660);
+      expect(km).toBeLessThan(700);
     });
 
-    test('calculates correct distance between TPE and NRT', () => {
-      const miles = calculateFlightMiles(TPE, NRT);
-      // TPE to NRT is ~1330 to 1360 miles
-      expect(miles).toBeGreaterThan(1320);
-      expect(miles).toBeLessThan(1370);
-    });
-
-    test('calculates long-haul transpacific distance (TPE to LAX)', () => {
-      const miles = calculateFlightMiles(TPE, LAX);
-      // TPE to LAX is ~6750 to 6850 miles
-      expect(miles).toBeGreaterThan(6700);
-      expect(miles).toBeLessThan(6900);
+    test('TPE to LAX is about 10,900 km', () => {
+      const km = calculateFlightKm(TPE, LAX);
+      expect(km).toBeGreaterThan(10800);
+      expect(km).toBeLessThan(11100);
     });
 
     test('returns 0 for identical points', () => {
-      expect(calculateFlightMiles(TPE, TPE)).toBe(0);
+      expect(calculateFlightKm(TPE, TPE)).toBe(0);
     });
   });
 
@@ -61,10 +52,19 @@ describe('greatCircle', () => {
   });
 
   describe('buildFlightArcsGeoJson', () => {
+    const route = (depIata: string, arrIata: string, from: typeof TPE, to: typeof TPE) => ({
+      depIata,
+      arrIata,
+      depLat: from.lat,
+      depLon: from.lon,
+      arrLat: to.lat,
+      arrLon: to.lon,
+    });
+
     test('builds GeoJSON FeatureCollection with LineString features', () => {
       const geojson = buildFlightArcsGeoJson([
-        { depIata: 'TPE', arrIata: 'PVG' },
-        { depIata: 'TPE', arrIata: 'NRT' },
+        route('TPE', 'PVG', TPE, PVG),
+        route('TPE', 'NRT', TPE, NRT),
       ]);
 
       expect(geojson.type).toBe('FeatureCollection');
@@ -75,19 +75,34 @@ describe('greatCircle', () => {
       expect(geojson.features[0].properties?.arrIata).toBe('PVG');
     });
 
-    test('safely skips unknown airport pairs', () => {
-      const geojson = buildFlightArcsGeoJson([
-        { depIata: 'UNKNOWN_A', arrIata: 'UNKNOWN_B' },
-      ]);
+    test('leaves out a flight with no positions', () => {
+      const geojson = buildFlightArcsGeoJson([{ depIata: 'TPE', arrIata: 'NRT', depLat: null }]);
       expect(geojson.features).toHaveLength(0);
+    });
+  });
+
+  describe('flightEnds', () => {
+    test('gives both ends of a flight', () => {
+      expect(
+        flightEnds({ depLat: 1, depLon: 2, arrLat: 3, arrLon: 4 }),
+      ).toEqual({ dep: { lat: 1, lon: 2 }, arr: { lat: 3, lon: 4 } });
+    });
+
+    // Zero is a place: the equator, or Greenwich.
+    test('takes a coordinate of zero as a coordinate', () => {
+      expect(flightEnds({ depLat: 0, depLon: 0, arrLat: 0, arrLon: 1 })).not.toBeNull();
+    });
+
+    test('gives nothing if any is missing', () => {
+      expect(flightEnds({ depLat: 1, depLon: 2, arrLat: 3, arrLon: null })).toBeNull();
     });
   });
 });
 
 describe('arcs over the date line', () => {
   test('a trans-Pacific arc never jumps across the map between two points', () => {
-    const tpe = findAirport('TPE')!;
-    const lax = findAirport('LAX')!;
+    const tpe = { lat: 25.0797, lon: 121.2342 };
+    const lax = { lat: 33.9416, lon: -118.4085 };
     const arc = buildGreatCircleArc(tpe, lax, 40);
     for (let i = 1; i < arc.length; i++) {
       expect(Math.abs(arc[i][0] - arc[i - 1][0])).toBeLessThan(180);

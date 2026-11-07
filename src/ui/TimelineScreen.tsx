@@ -63,7 +63,7 @@ export const TimelineScreen = memo(function TimelineScreen({
             {busy === day.date ? (
               <ActivityIndicator size="small" color={theme.accent} />
             ) : (
-              <Text style={styles.chevron}>在地圖上看 ›</Text>
+              <Text style={styles.chevron}>›</Text>
             )}
           </View>
         </PressScale>
@@ -103,7 +103,7 @@ export const TimelineScreen = memo(function TimelineScreen({
           {days === null ? <Text style={styles.hint}>讀取中…</Text> : null}
 
           {days?.length === 0 ? (
-            <Text style={styles.hint}>還沒有任何記錄。帶著手機出門走一段，這裡就會出現。</Text>
+            <Text style={styles.hint}>還沒有任何記錄</Text>
           ) : null}
         </View>
       }
@@ -156,5 +156,5 @@ const styles = StyleSheet.create({
   // The same width whether it holds the words or the spinner, so the row does not
   // change shape when a day is tapped.
   dayEnd: { minWidth: 76, height: 20, alignItems: 'flex-end', justifyContent: 'center' },
-  chevron: { color: theme.accent, fontSize: 12 },
+  chevron: { color: theme.accent, fontSize: 18 },
 });

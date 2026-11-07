@@ -8,8 +8,9 @@
  */
 
 import type { SqlDriver } from './driver';
+import { migrateFlights } from './flightSchema';
 
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 const STATEMENTS = [
   `CREATE TABLE IF NOT EXISTS meta (
@@ -87,58 +88,13 @@ const STATEMENTS = [
      resolved_at INTEGER NOT NULL,
      PRIMARY KEY (z, x, y)
    )`,
-
-  // Flight tracking and Flight Passport. Kept completely separate from
-  // points and fog_tiles so flight data never pollutes ground GPS fog-of-war.
-  `CREATE TABLE IF NOT EXISTS flights (
-     id                    TEXT PRIMARY KEY,
-     flight_number         TEXT NOT NULL,
-     airline_code          TEXT NOT NULL,
-     airline_name          TEXT NOT NULL,
-     alliance              TEXT,
-     dep_iata              TEXT NOT NULL,
-     arr_iata              TEXT NOT NULL,
-     dep_scheduled_utc     INTEGER NOT NULL,
-     dep_estimated_utc     INTEGER,
-     arr_scheduled_utc     INTEGER NOT NULL,
-     arr_estimated_utc     INTEGER,
-     dep_tz                TEXT NOT NULL,
-     arr_tz                TEXT NOT NULL,
-     dep_terminal          TEXT,
-     arr_terminal          TEXT,
-     dep_gate              TEXT,
-     arr_gate              TEXT,
-     baggage_belt          TEXT,
-     status                TEXT NOT NULL DEFAULT 'SCHEDULED',
-     distance_miles        REAL NOT NULL,
-     duration_minutes      INTEGER NOT NULL,
-     seat                  TEXT,
-     cabin_class           TEXT,
-     pnr                   TEXT,
-     notes                 TEXT,
-     notifications_enabled INTEGER NOT NULL DEFAULT 0,
-     is_finished           INTEGER NOT NULL DEFAULT 0,
-     last_synced_at        INTEGER,
-     created_at            INTEGER NOT NULL
-   )`,
-
-  `CREATE INDEX IF NOT EXISTS idx_flights_dep_time ON flights(dep_scheduled_utc DESC)`,
-  `CREATE INDEX IF NOT EXISTS idx_flights_finished ON flights(is_finished, dep_scheduled_utc ASC)`,
-
-  `CREATE TABLE IF NOT EXISTS flight_docs (
-     id         TEXT PRIMARY KEY,
-     flight_id  TEXT NOT NULL REFERENCES flights(id) ON DELETE CASCADE,
-     file_name  TEXT NOT NULL,
-     local_uri  TEXT NOT NULL,
-     mime_type  TEXT NOT NULL,
-     created_at INTEGER NOT NULL
-   )`,
-
-  `CREATE INDEX IF NOT EXISTS idx_flight_docs_flight_id ON flight_docs(flight_id)`,
 ];
 
-/** Bring an empty or existing database up to SCHEMA_VERSION. */
-export async function migrate(driver: SqlDriver): Promise<void> {
+/**
+ * The tables recording needs. The background task's connection runs this and
+ * nothing more; see flightSchema.ts for why.
+ */
+export async function migrateTrack(driver: SqlDriver): Promise<void> {
   for (const statement of STATEMENTS) {
     await driver.exec(statement);
   }
@@ -147,4 +103,10 @@ export async function migrate(driver: SqlDriver): Promise<void> {
     'schema_version',
     String(SCHEMA_VERSION),
   ]);
+}
+
+/** Bring an empty or existing database up to SCHEMA_VERSION. */
+export async function migrate(driver: SqlDriver): Promise<void> {
+  await migrateTrack(driver);
+  await migrateFlights(driver);
 }

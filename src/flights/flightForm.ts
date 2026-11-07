@@ -1,88 +1,111 @@
 /**
  * The add-flight form, and the one step that turns it into a FlightRecord.
  *
- * It lives here rather than in AddFlightSheet so the part that decides what
- * gets saved runs under `npm test`. The sheet it replaces made up most of a
- * flight: departure always thirty days from now and 125 minutes long, gate D6,
- * terminals 2 and 1, belt 7, SkyTeam, and a form that opened on CI501 TPE→PVG
- * seat 24A. A past trip then sat in "upcoming" for a month and the passport
- * counted a route nobody flew. The same rule as the track applies: a flight
- * says only what the user typed or the ticket said, and a field nobody filled
- * stays empty. Where a value is needed and missing, the save is refused.
+ * It lives here rather than in AddFlightSheet so the part that decides what gets
+ * saved runs under `npm test`. A flight number and a date are all that has to be
+ * given: the status API answers the rest, and the seat and notes are the user's
+ * own. Only when it finds nothing does the sheet ask for the airports and times
+ * by hand.
+ *
+ * The same rule as the track applies: a flight says only what the user typed or
+ * the API said, and a field nobody filled stays empty. An earlier sheet made up
+ * most of a flight (departure thirty days out, gate D6, TPE→PVG), so a past trip
+ * sat in "upcoming" for a month and the passport counted a route nobody flew.
  */
 
-import { findAirport } from './airports';
-import type { GeminiExtractedLeg } from './geminiParser';
-import { calculateFlightMiles } from './greatCircle';
-import type { Alliance, CabinClass, FlightRecord } from './types';
+import type { TicketFacts } from './ticketFacts';
+import type { FlightRecord, LookedUpFlight } from './types';
 import { isValidDate, isValidTime, localToUtc, offsetToZone, utcToLocal } from './zonedTime';
 
 export interface FlightForm {
   flightNumber: string;
-  airlineName: string;
-  depIata: string;
-  arrIata: string;
   /** Local date and time at the departure airport, as printed on the ticket. */
   depDate: string;
   depTime: string;
+  seat: string;
+  notes: string;
+  /** What the API said for this number on this date, if it was asked. */
+  lookedUp: LookedUpFlight | null;
+  // Typed by hand, only when nothing could be looked up.
+  airlineName: string;
+  depIata: string;
+  arrIata: string;
   /** Local at the arrival airport. A blank date means the departure date. */
   arrDate: string;
   arrTime: string;
-  /** Only read for an airport the table does not know, e.g. "+9". */
+  /** With no table of airports, the only way to read a typed time, e.g. "+9". */
   depUtcOffset: string;
   arrUtcOffset: string;
-  seat: string;
-  pnr: string;
-  notes: string;
-  // Read from a ticket, never typed: kept so a parse is not thrown away.
-  alliance: Alliance | null;
-  cabinClass: CabinClass | null;
-  depTerminal: string | null;
-  arrTerminal: string | null;
-  depGate: string | null;
 }
 
 export const EMPTY_FLIGHT_FORM: FlightForm = Object.freeze({
   flightNumber: '',
+  depDate: '',
+  depTime: '',
+  seat: '',
+  notes: '',
+  lookedUp: null,
   airlineName: '',
   depIata: '',
   arrIata: '',
-  depDate: '',
-  depTime: '',
   arrDate: '',
   arrTime: '',
   depUtcOffset: '',
   arrUtcOffset: '',
-  seat: '',
-  pnr: '',
-  notes: '',
-  alliance: null,
-  cabinClass: null,
-  depTerminal: null,
-  arrTerminal: null,
-  depGate: null,
 });
 
 export type BuildFlightResult =
   | { ok: true; flight: FlightRecord }
   | { ok: false; error: string };
 
-/** The zone an airport's times are in: the table's, else the offset typed for it. */
+const orNull = (text: string | null | undefined) => text?.trim() || null;
+
+/** Tickets print "JX 871"; the status lookup and the airline code need JX871. */
+export const cleanFlightNumber = (text: string) => text.replace(/\s+/g, '').toUpperCase();
+
+/** A flight that is over when it is saved is the user's word that it was flown. */
+function outcome(status: FlightRecord['status'], arrScheduledUtc: number, now: number) {
+  if (status === 'CANCELLED') return { status, isFinished: false };
+  const over = arrScheduledUtc <= now;
+  return { status: over ? ('LANDED' as const) : status, isFinished: over };
+}
+
+function fromLookup(
+  form: FlightForm,
+  flight: LookedUpFlight,
+  now: number,
+  id: string,
+): FlightRecord {
+  const departure = utcToLocal(flight.depScheduledUtc, flight.depTz);
+
+  return {
+    ...flight,
+    ...outcome(flight.status, flight.arrScheduledUtc, now),
+    id,
+    depDate: departure.date,
+    depTime: departure.time,
+    seat: orNull(form.seat),
+    notes: orNull(form.notes),
+    createdAt: now,
+    scheduleSource: 'api',
+    durationMinutes: Math.round((flight.arrScheduledUtc - flight.depScheduledUtc) / 60000),
+    depEstimatedUtc: null,
+    arrEstimatedUtc: null,
+    baggageBelt: null,
+    lastSyncedAt: null,
+  };
+}
+
+/** The zone a typed time is in, from the offset typed for it. */
 function zoneFor(iata: string, offsetText: string): { zone: string } | { error: string } {
-  const airport = findAirport(iata);
-  if (airport) return { zone: airport.tz };
-  if (!offsetText.trim()) {
-    return { error: `找不到 ${iata} 的時區，請填當地的 UTC 偏移（例如 +9）` };
-  }
+  if (!offsetText.trim()) return { error: `請填 ${iata} 的 UTC 偏移，例如 +9` };
   const zone = offsetToZone(offsetText);
   if (!zone) return { error: `${iata} 的 UTC 偏移只支援整點，例如 +9 或 -5` };
   return { zone };
 }
 
-const orNull = (text: string | null | undefined) => text?.trim() || null;
-
-export function buildFlightFromForm(form: FlightForm, now: number, id: string): BuildFlightResult {
-  const flightNumber = form.flightNumber.trim().toUpperCase();
+function fromTyped(form: FlightForm, now: number, id: string): BuildFlightResult {
+  const flightNumber = cleanFlightNumber(form.flightNumber);
   const depIata = form.depIata.trim().toUpperCase();
   const arrIata = form.arrIata.trim().toUpperCase();
 
@@ -115,136 +138,114 @@ export function buildFlightFromForm(form: FlightForm, now: number, id: string): 
     return { ok: false, error: '抵達時間早於起飛時間：跨日航班請填抵達日期' };
   }
 
-  const depAirport = findAirport(depIata);
-  const arrAirport = findAirport(arrIata);
-  // Without both airports' positions there is no distance to give, and a
-  // made-up one would end up in the passport's totals.
-  const distanceMiles =
-    depAirport && arrAirport
-      ? calculateFlightMiles(
-          { lat: depAirport.lat, lon: depAirport.lon },
-          { lat: arrAirport.lat, lon: arrAirport.lon },
-        )
-      : 0;
-
   const airlineCode = flightNumber.slice(0, 2);
+  const departure = utcToLocal(depScheduledUtc, dep.zone);
 
   return {
     ok: true,
     flight: {
       id,
       flightNumber,
+      depDate: departure.date,
+      depTime: departure.time,
+      seat: orNull(form.seat),
+      notes: orNull(form.notes),
+      createdAt: now,
+      scheduleSource: 'user',
       airlineCode,
       airlineName: form.airlineName.trim() || airlineCode,
-      alliance: form.alliance,
       depIata,
       arrIata,
       depScheduledUtc,
-      depEstimatedUtc: null,
       arrScheduledUtc,
-      arrEstimatedUtc: null,
       depTz: dep.zone,
       arrTz: arr.zone,
-      depTerminal: orNull(form.depTerminal),
-      arrTerminal: orNull(form.arrTerminal),
-      depGate: orNull(form.depGate),
+      depTerminal: null,
+      arrTerminal: null,
+      // Nothing said where these airports are, and a made-up position would end
+      // up on the map and in the passport's totals.
+      depCity: null,
+      arrCity: null,
+      depCountry: null,
+      arrCountry: null,
+      depLat: null,
+      depLon: null,
+      arrLat: null,
+      arrLon: null,
+      distanceKm: null,
+      durationMinutes: Math.round((arrScheduledUtc - depScheduledUtc) / 60000),
+      ...outcome('SCHEDULED', arrScheduledUtc, now),
+      depEstimatedUtc: null,
+      arrEstimatedUtc: null,
+      depGate: null,
       arrGate: null,
       baggageBelt: null,
-      status: 'SCHEDULED',
-      distanceMiles,
-      durationMinutes: Math.round((arrScheduledUtc - depScheduledUtc) / 60000),
-      seat: orNull(form.seat),
-      cabinClass: form.cabinClass,
-      pnr: orNull(form.pnr),
-      notes: orNull(form.notes),
-      notificationsEnabled: true,
-      isFinished: false,
       lastSyncedAt: null,
-      createdAt: now,
     },
   };
 }
 
-const ISO = /^(\d{4}-\d{2}-\d{2})(?:[T ](\d{2}):(\d{2})(?::\d{2}(?:\.\d+)?)?(Z|[+-]\d{2}(?::?\d{2})?)?)?$/i;
-
-/** Minutes east of UTC, from "Z", "+08:00", "+0800" or "-05". */
-function offsetMinutes(text: string): number {
-  if (/^z$/i.test(text)) return 0;
-  const sign = text[0] === '-' ? -1 : 1;
-  const digits = text.slice(1).replace(':', '');
-  return sign * (Number(digits.slice(0, 2)) * 60 + Number(digits.slice(2) || 0));
+export function buildFlightFromForm(form: FlightForm, now: number, id: string): BuildFlightResult {
+  return form.lookedUp
+    ? { ok: true, flight: fromLookup(form, form.lookedUp, now, id) }
+    : fromTyped(form, now, id);
 }
 
-interface LocalFields {
-  date: string;
-  time: string;
-  offset: string;
+/** A lookup answers for one number on one date; changing either drops it. */
+export function editForm<K extends keyof FlightForm>(
+  form: FlightForm,
+  key: K,
+  value: FlightForm[K],
+): FlightForm {
+  const lookedUp = key === 'flightNumber' || key === 'depDate' ? null : form.lookedUp;
+  return { ...form, lookedUp, [key]: value };
+}
+
+/** A number can fly several legs in a day: the ticket's time says which is ours. */
+function pickLeg(
+  legs: readonly LookedUpFlight[],
+  time: string | null,
+): LookedUpFlight | undefined {
+  const atThatTime = legs.find((leg) => utcToLocal(leg.depScheduledUtc, leg.depTz).time === time);
+  return atThatTime ?? legs[0];
 }
 
 /**
- * A ticket time as the form shows it: the date and time on that airport's
- * clocks. A time with an offset is converted to the airport's zone, which is
- * also right when the model answered in UTC; one without is taken as written,
- * because tickets print local times.
+ * The form for a ticket: the lookup, and the seat only the ticket knows. With
+ * nothing found it keeps `base`, so a failed lookup does not clear what the user
+ * typed, and fills in what the ticket gave.
  */
-function localFields(iso: string | null | undefined, iata: string): LocalFields {
-  const m = ISO.exec((iso ?? '').trim());
-  if (!m) return { date: '', time: '', offset: '' };
-  const [, date, hh, mm, zone] = m;
-  if (hh === undefined) return { date, time: '', offset: '' };
-  const written = { date, time: `${hh}:${mm}` };
-  if (zone === undefined) return { ...written, offset: '' };
+export function formFromTicket(
+  ticket: TicketFacts,
+  legs: readonly LookedUpFlight[],
+  base: FlightForm,
+): FlightForm {
+  const leg = pickLeg(legs, ticket.time);
+  const seat = ticket.seat ?? base.seat;
 
-  const minutes = offsetMinutes(zone);
-  const airport = findAirport(iata);
-  if (airport) {
-    const [y, mo, d] = date.split('-').map(Number);
-    const instant = Date.UTC(y, mo - 1, d, Number(hh), Number(mm)) - minutes * 60000;
-    return { ...utcToLocal(instant, airport.tz), offset: '' };
+  if (leg) {
+    const departure = utcToLocal(leg.depScheduledUtc, leg.depTz);
+    return {
+      ...base,
+      flightNumber: leg.flightNumber,
+      depDate: departure.date,
+      depTime: departure.time,
+      seat,
+      lookedUp: leg,
+    };
   }
-  // For an airport the table lacks, the ticket's offset is the only zone there
-  // is; carry it into the form when the form can hold it (whole hours).
-  const offset =
-    minutes % 60 === 0 ? `${minutes > 0 ? '+' : minutes < 0 ? '-' : ''}${Math.abs(minutes / 60)}` : '';
-  return { ...written, offset };
-}
 
-const ALLIANCES: readonly Alliance[] = ['SkyTeam', 'Star Alliance', 'oneworld'];
-const CABINS: readonly CabinClass[] = ['Economy', 'Premium Economy', 'Business', 'First'];
-
-function oneOf<T extends string>(value: string | null | undefined, allowed: readonly T[]): T | null {
-  const wanted = value?.trim().toLowerCase();
-  return allowed.find((a) => a.toLowerCase() === wanted) ?? null;
-}
-
-/**
- * Everything the form shows, from one parsed ticket leg. Every field is
- * replaced, including with nothing: a ticket without a seat must not inherit
- * the seat of whatever was in the form before.
- */
-export function formFromLeg(leg: GeminiExtractedLeg): FlightForm {
-  const depIata = (leg.depIata ?? '').trim().toUpperCase();
-  const arrIata = (leg.arrIata ?? '').trim().toUpperCase();
-  const dep = localFields(leg.depScheduledIso, depIata);
-  const arr = localFields(leg.arrScheduledIso, arrIata);
   return {
-    flightNumber: (leg.flightNumber ?? '').trim().toUpperCase(),
-    airlineName: (leg.airlineName ?? '').trim(),
-    depIata,
-    arrIata,
-    depDate: dep.date,
-    depTime: dep.time,
-    arrDate: arr.date,
-    arrTime: arr.time,
-    depUtcOffset: dep.offset,
-    arrUtcOffset: arr.offset,
-    seat: leg.seat?.trim() ?? '',
-    pnr: leg.pnr?.trim() ?? '',
-    notes: '',
-    alliance: oneOf(leg.alliance, ALLIANCES),
-    cabinClass: oneOf(leg.cabinClass, CABINS),
-    depTerminal: orNull(leg.depTerminal),
-    arrTerminal: orNull(leg.arrTerminal),
-    depGate: orNull(leg.depGate),
+    ...base,
+    flightNumber: ticket.flightNumber,
+    depDate: ticket.date ?? base.depDate,
+    depTime: ticket.time ?? base.depTime,
+    seat,
+    lookedUp: null,
   };
+}
+
+/** What the button says after reading. More than one flight must not pass unmentioned. */
+export function legsFoundMessage(legs: ReadonlyArray<{ flightNumber: string }>): string {
+  return legs.length > 1 ? `已辨識 ${legs.length} 段航班` : `已辨識 ${legs[0].flightNumber}`;
 }

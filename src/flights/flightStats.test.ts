@@ -6,6 +6,8 @@ function createMockFlight(overrides: Partial<FlightRecord>): FlightRecord {
   return {
     id: 'f-1',
     flightNumber: 'CI501',
+    depDate: '2026-12-31',
+    scheduleSource: 'api',
     airlineCode: 'CI',
     airlineName: 'China Airlines',
     depIata: 'TPE',
@@ -15,9 +17,8 @@ function createMockFlight(overrides: Partial<FlightRecord>): FlightRecord {
     depTz: 'Asia/Taipei',
     arrTz: 'Asia/Shanghai',
     status: 'LANDED',
-    distanceMiles: 420,
+    distanceKm: 420,
     durationMinutes: 125,
-    notificationsEnabled: false,
     isFinished: true,
     createdAt: 1766900000000,
     ...overrides,
@@ -29,7 +30,7 @@ describe('flightStats', () => {
     const stats = computePassportStats([]);
     expect(stats.totalFlights).toBe(0);
     expect(stats.totalHours).toBe(0);
-    expect(stats.totalMiles).toBe(0);
+    expect(stats.totalKm).toBe(0);
     expect(stats.visitedCountriesCount).toBe(0);
     expect(stats.visitedCountryCodes).toEqual([]);
     expect(stats.topAirportIata).toBeNull();
@@ -41,27 +42,33 @@ describe('flightStats', () => {
       id: 'f-1',
       depIata: 'TPE',
       arrIata: 'PVG',
-      distanceMiles: 420,
+      depCountry: 'TW',
+      arrCountry: 'CN',
+      distanceKm: 420,
       durationMinutes: 120, // 2.0 hrs
     });
     const f2 = createMockFlight({
       id: 'f-2',
       depIata: 'TPE',
       arrIata: 'NRT',
-      distanceMiles: 1356,
+      depCountry: 'TW',
+      arrCountry: 'JP',
+      distanceKm: 1356,
       durationMinutes: 195, // 3.25 hrs -> total 5.25 -> 5.3 hrs
     });
     const f3 = createMockFlight({
       id: 'f-3',
       depIata: 'NRT',
       arrIata: 'TPE',
-      distanceMiles: 1356,
+      depCountry: 'JP',
+      arrCountry: 'TW',
+      distanceKm: 1356,
       durationMinutes: 210, // 3.5 hrs -> total 8.75 -> 8.8 hrs
     });
 
     const stats = computePassportStats([f1, f2, f3]);
     expect(stats.totalFlights).toBe(3);
-    expect(stats.totalMiles).toBe(420 + 1356 + 1356); // 3132
+    expect(stats.totalKm).toBe(420 + 1356 + 1356); // 3132
     expect(stats.totalHours).toBe(8.8); // (120 + 195 + 210) / 60 = 525 / 60 = 8.75 -> 8.8
 
     // TPE (TW), PVG (CN), NRT (JP) -> 3 countries: TW, CN, JP
@@ -81,20 +88,20 @@ describe('flightStats', () => {
     const flown = createMockFlight({
       id: 'f-1',
       isFinished: true,
-      distanceMiles: 500,
+      distanceKm: 500,
       durationMinutes: 60,
     });
     const booked = createMockFlight({
       id: 'f-2',
       isFinished: false,
       arrIata: 'LHR',
-      distanceMiles: 6000,
+      distanceKm: 6000,
       durationMinutes: 800,
     });
 
     const stats = computePassportStats([flown, booked]);
     expect(stats.totalFlights).toBe(1);
-    expect(stats.totalMiles).toBe(500);
+    expect(stats.totalKm).toBe(500);
     expect(stats.totalHours).toBe(1.0);
     expect(stats.visitedCountryCodes).not.toContain('GB');
   });
@@ -108,4 +115,24 @@ describe('flightStats', () => {
     expect(topAirline(flights)).toEqual({ name: 'EVA Air', count: 1 });
     expect(topAirline([flights[1]])).toBeNull();
   });
+});
+
+// Marking it finished, by hand or by mistake, does not mean it was flown.
+test('a cancelled flight is not a flight flown, finished or not', () => {
+  const cancelled = createMockFlight({ status: 'CANCELLED', isFinished: true });
+
+  expect(computePassportStats([cancelled]).totalFlights).toBe(0);
+  expect(computePassportStats([cancelled]).visitedCountriesCount).toBe(0);
+  expect(topAirline([cancelled])).toBeNull();
+});
+
+// Typed in by hand, a flight has neither: it still counts, without inventing them.
+test('a flight with no country or distance counts as a flight and adds no stamp', () => {
+  const stats = computePassportStats([
+    createMockFlight({ depCountry: null, arrCountry: null, distanceKm: null }),
+  ]);
+
+  expect(stats.totalFlights).toBe(1);
+  expect(stats.totalKm).toBe(0);
+  expect(stats.visitedCountryCodes).toEqual([]);
 });

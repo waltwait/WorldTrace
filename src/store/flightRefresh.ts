@@ -14,22 +14,40 @@ import type { FlightRecord } from '../flights/types';
 import type { SqlDriver } from './driver';
 import { listFlights, updateFlight } from './flights';
 
+/**
+ * Saves only what a sync changed. The network takes seconds, and a whole record
+ * read before it would put back anything the user edited in that time.
+ */
+export async function saveSyncedFlight(
+  driver: SqlDriver,
+  before: FlightRecord,
+  after: FlightRecord,
+): Promise<void> {
+  const changed = Object.fromEntries(
+    Object.entries(after).filter(([key, value]) => before[key as keyof FlightRecord] !== value),
+  ) as Partial<FlightRecord>;
+  await updateFlight(driver, before.id, changed);
+}
+
+/**
+ * Hands back the flights as they are once the polls are done, read again: one
+ * added or deleted during those seconds must not be undone by an old list.
+ */
 export async function refreshDueFlights(
   driver: SqlDriver,
   port: FlightStatusPort,
   now: number,
 ): Promise<FlightRecord[]> {
-  const all = await listFlights(driver);
-  const out: FlightRecord[] = [];
   // One at a time: a refresh is a handful of flights, and the API is metered.
-  for (const flight of all) {
-    if (!shouldPollFlight(flight, now)) {
-      out.push(flight);
-      continue;
+  for (const flight of await listFlights(driver)) {
+    if (!shouldPollFlight(flight, now)) continue;
+
+    try {
+      const next = await syncFlightStatus(flight, port, now);
+      if (next !== flight) await saveSyncedFlight(driver, flight, next);
+    } catch {
+      // One flight that cannot be synced must not hide the rest of the list.
     }
-    const next = await syncFlightStatus(flight, port, now);
-    await updateFlight(driver, flight.id, next);
-    out.push(next);
   }
-  return out;
+  return listFlights(driver);
 }

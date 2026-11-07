@@ -1,5 +1,7 @@
 import { describe, expect, test } from 'vitest';
-import { formatArea, formatDistance, formatByUnit, rejectionLabel } from './format';
+import { formatArea, formatDistance, formatByUnit, rejectionLabel,
+  formatFlightDistance,
+} from './format';
 
 describe('formatByUnit', () => {
   test('writes a distance in kilometres', () => {
@@ -91,5 +93,16 @@ describe('rejectionLabel', () => {
 
   test('falls back to the raw reason if one is ever added without a label', () => {
     expect(rejectionLabel('SOMETHING_NEW' as never)).toBe('SOMETHING_NEW');
+  });
+});
+
+describe('formatFlightDistance', () => {
+  test('reads like every other distance', () => {
+    expect(formatFlightDistance(640.5)).toBe('640.50 km');
+  });
+
+  // A flight typed in by hand has no positions to measure between.
+  test('shows a dash rather than 0 km for a distance nobody knows', () => {
+    expect(formatFlightDistance(null)).toBe('—');
   });
 });

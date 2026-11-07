@@ -6,9 +6,10 @@ import {
   deleteFlightAndDocs,
   docFileName,
   removeFlightDoc,
+  saveNewFlight,
   type DocFiles,
 } from './flightDocs';
-import { getFlightById, insertFlight, listFlightDocs } from './flights';
+import { getFlightById, insertFlight, listFlightDocs, listFlights } from './flights';
 import { migrate } from './schema';
 import { createNodeDriver } from './testing/nodeDriver';
 
@@ -35,6 +36,8 @@ function memoryFiles() {
 const flight: FlightRecord = {
   id: 'f-1',
   flightNumber: 'BR198',
+  depDate: '2026-12-01',
+  scheduleSource: 'api',
   airlineCode: 'BR',
   airlineName: 'EVA Air',
   depIata: 'TPE',
@@ -44,9 +47,8 @@ const flight: FlightRecord = {
   depTz: 'Asia/Taipei',
   arrTz: 'Asia/Tokyo',
   status: 'SCHEDULED',
-  distanceMiles: 1300,
+  distanceKm: 1300,
   durationMinutes: 180,
-  notificationsEnabled: true,
   isFinished: false,
   createdAt: 0,
 };
@@ -116,5 +118,41 @@ describe('docFileName', () => {
     expect(docFileName('doc-2', 'IMG_2041', 'image/jpeg')).toBe('doc-2.jpg');
     expect(docFileName('doc-3', 'pass', 'image/png')).toBe('doc-3.png');
     expect(docFileName('doc-4', 'odd', 'application/octet-stream')).toBe('doc-4');
+  });
+});
+
+describe('saveNewFlight', () => {
+  const another: FlightRecord = { ...flight, id: 'f-2' };
+  const ticket = {
+    id: 'doc-9',
+    sourceUri: picked.sourceUri,
+    fileName: picked.fileName,
+    mimeType: picked.mimeType,
+    now: 7,
+  };
+
+  test('saves the flight and its ticket together', async () => {
+    await saveNewFlight(driver, memoryFiles(), another, ticket);
+
+    expect(await getFlightById(driver, 'f-2')).not.toBeNull();
+    expect((await listFlightDocs(driver, 'f-2')).map((d) => d.id)).toEqual(['doc-9']);
+  });
+
+  test('saves a flight with no ticket', async () => {
+    await saveNewFlight(driver, memoryFiles(), another, null);
+
+    expect(await getFlightById(driver, 'f-2')).not.toBeNull();
+  });
+
+  // The sheet stays open on an error, and saving again makes a new id: a row
+  // left behind here becomes the same flight twice.
+  test('leaves no flight behind when the ticket cannot be kept, and says why', async () => {
+    const files = memoryFiles();
+    files.failNext = true;
+
+    await expect(saveNewFlight(driver, files, another, ticket)).rejects.toThrow('disk full');
+
+    expect(await getFlightById(driver, 'f-2')).toBeNull();
+    expect((await listFlights(driver)).map((f) => f.id)).toEqual(['f-1']);
   });
 });

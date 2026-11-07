@@ -1,5 +1,11 @@
 import { describe, expect, test } from 'vitest';
-import { localToUtc, offsetToZone, utcToLocal } from './zonedTime';
+import {
+  arrivalTimeDifference,
+  localToUtc,
+  normalizeDate,
+  offsetToZone,
+  utcToLocal,
+} from './zonedTime';
 
 describe('localToUtc', () => {
   test('reads a ticket time as the time at that airport', () => {
@@ -74,5 +80,58 @@ describe('offsetToZone', () => {
     expect(offsetToZone('+15')).toBeNull();
     expect(offsetToZone('')).toBeNull();
     expect(offsetToZone('Tokyo')).toBeNull();
+  });
+});
+
+// Building a formatter is by far the dearest part of reading a clock, and a
+// list of flights reads several per card.
+test('makes one formatter per zone, however many times it is read', () => {
+  const Real = Intl.DateTimeFormat;
+  let made = 0;
+  Intl.DateTimeFormat = function (...args: ConstructorParameters<typeof Real>) {
+    made += 1;
+    return new Real(...args);
+  } as unknown as typeof Real;
+
+  try {
+    for (let i = 0; i < 50; i++) {
+      utcToLocal(Date.UTC(2026, 0, 1) + i * 86400000, 'Pacific/Kiritimati');
+      localToUtc('2026-01-01', '08:00', 'Pacific/Kiritimati');
+    }
+    expect(made).toBe(1);
+  } finally {
+    Intl.DateTimeFormat = Real;
+  }
+});
+
+test('normalizeDate writes a typed date the way the status API wants it', () => {
+  expect(normalizeDate('2026/12/1')).toBe('2026-12-01');
+  expect(normalizeDate('2026-02-30')).toBeNull();
+});
+
+describe('arrivalTimeDifference', () => {
+  const WINTER = Date.UTC(2026, 11, 1);
+
+  test('says nothing between zones on the same clock', () => {
+    expect(arrivalTimeDifference('Asia/Taipei', 'Asia/Shanghai', WINTER).hasDifference).toBe(false);
+  });
+
+  test('says how far ahead or behind the arrival is', () => {
+    expect(arrivalTimeDifference('Asia/Taipei', 'Asia/Tokyo', WINTER).headline).toBe('快 1 小時');
+    expect(arrivalTimeDifference('Asia/Tokyo', 'Asia/Taipei', WINTER).headline).toBe('慢 1 小時');
+  });
+
+  test('holds a half hour', () => {
+    expect(arrivalTimeDifference('Asia/Taipei', 'Asia/Kolkata', WINTER).headline).toBe('慢 2.5 小時');
+  });
+
+  test('uses the offsets on that date, not today', () => {
+    const summer = Date.UTC(2026, 6, 1);
+    expect(arrivalTimeDifference('Asia/Taipei', 'Europe/London', WINTER).headline).toBe('慢 8 小時');
+    expect(arrivalTimeDifference('Asia/Taipei', 'Europe/London', summer).headline).toBe('慢 7 小時');
+  });
+
+  test('says nothing for a zone it does not know', () => {
+    expect(arrivalTimeDifference('Asia/Taipei', 'Not/AZone', WINTER).hasDifference).toBe(false);
   });
 });

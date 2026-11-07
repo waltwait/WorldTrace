@@ -2,7 +2,6 @@
  * Aggregates statistics for the Flight Passport.
  */
 
-import { findAirport } from './airports';
 import type { FlightRecord, PassportStats } from './types';
 
 /**
@@ -13,7 +12,7 @@ import type { FlightRecord, PassportStats } from './types';
  * line saying stamps unlock after a completed flight.
  */
 function flown(flights: FlightRecord[]): FlightRecord[] {
-  return flights.filter((f) => f.isFinished);
+  return flights.filter((f) => f.isFinished && f.status !== 'CANCELLED');
 }
 
 export function computePassportStats(flights: FlightRecord[]): PassportStats {
@@ -23,7 +22,7 @@ export function computePassportStats(flights: FlightRecord[]): PassportStats {
     return {
       totalFlights: 0,
       totalHours: 0,
-      totalMiles: 0,
+      totalKm: 0,
       visitedCountriesCount: 0,
       visitedCountryCodes: [],
       topAirportIata: null,
@@ -32,29 +31,23 @@ export function computePassportStats(flights: FlightRecord[]): PassportStats {
   }
 
   let totalMinutes = 0;
-  let totalMiles = 0;
+  let totalKm = 0;
   const countryCodesSet = new Set<string>();
   const airportCounts = new Map<string, number>();
 
   for (const flight of targetFlights) {
     totalMinutes += flight.durationMinutes;
-    totalMiles += flight.distanceMiles;
+    totalKm += flight.distanceKm ?? 0;
 
     // Track origin airport & country
     const depUpper = flight.depIata.toUpperCase();
     airportCounts.set(depUpper, (airportCounts.get(depUpper) ?? 0) + 1);
-    const depAirport = findAirport(depUpper);
-    if (depAirport) {
-      countryCodesSet.add(depAirport.countryCode);
-    }
+    if (flight.depCountry) countryCodesSet.add(flight.depCountry);
 
     // Track destination airport & country
     const arrUpper = flight.arrIata.toUpperCase();
     airportCounts.set(arrUpper, (airportCounts.get(arrUpper) ?? 0) + 1);
-    const arrAirport = findAirport(arrUpper);
-    if (arrAirport) {
-      countryCodesSet.add(arrAirport.countryCode);
-    }
+    if (flight.arrCountry) countryCodesSet.add(flight.arrCountry);
   }
 
   const airportVisits = Array.from(airportCounts.entries())
@@ -67,7 +60,7 @@ export function computePassportStats(flights: FlightRecord[]): PassportStats {
   return {
     totalFlights: targetFlights.length,
     totalHours,
-    totalMiles: Math.round(totalMiles),
+    totalKm: Math.round(totalKm),
     visitedCountriesCount: countryCodesSet.size,
     visitedCountryCodes: Array.from(countryCodesSet).sort(),
     topAirportIata,

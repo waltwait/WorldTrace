@@ -8,14 +8,22 @@ import {
   Text,
   View,
 } from 'react-native';
-import { findAirport } from '../flights/airports';
-import { airportTime, departureCountdown } from '../flights/flightDisplay';
+import {
+  airportTime,
+  departureCountdown,
+  pastFlights,
+  statusLabel,
+  upcomingFlights,
+} from '../flights/flightDisplay';
 import { createAeroDataBoxPort } from '../flights/flightStatusApi';
 import type { FlightRecord } from '../flights/types';
+import { apiKey } from '../settings/expoKeyStore';
 import { database } from '../store/database';
 import { refreshDueFlights } from '../store/flightRefresh';
+import { listFlights } from '../store/flights';
 import { AddFlightSheet } from './AddFlightSheet';
 import { FlightDetailSheet } from './FlightDetailSheet';
+import { formatFlightDistance } from './format';
 import { PressScale } from './PressScale';
 import { radius, theme } from './theme';
 
@@ -31,15 +39,26 @@ export const FlightsScreen = memo(function FlightsScreen({
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [addSheetVisible, setAddSheetVisible] = useState(false);
-  const [selectedFlight, setSelectedFlight] = useState<FlightRecord | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
+  // An id, not a copy: a refresh landing while the sheet is open must reach it,
+  // or its next action writes back what it was opened with.
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const selectedFlight = flights.find((f) => f.id === selectedId) ?? null;
 
   const refreshFlights = useCallback(async () => {
     try {
       const db = await database();
-      const port = createAeroDataBoxPort(process.env.EXPO_PUBLIC_FLIGHT_API_KEY);
+      // What is on the phone first. This is the first page, and the polls that
+      // follow can take as long as the network does.
+      setFlights(await listFlights(db));
+      setLoading(false);
+      setLoadFailed(false);
+
+      const port = createAeroDataBoxPort((await apiKey('flightStatus')) ?? undefined);
       setFlights(await refreshDueFlights(db, port, Date.now()));
     } catch {
-      // Ignore background refresh errors
+      // Said on the page: an empty list would claim there are no flights.
+      setLoadFailed(true);
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -55,8 +74,8 @@ export const FlightsScreen = memo(function FlightsScreen({
     void refreshFlights();
   }, [refreshFlights]);
 
-  const activeFlights = flights.filter((f) => !f.isFinished);
-  const finishedFlights = flights.filter((f) => f.isFinished);
+  const activeFlights = upcomingFlights(flights);
+  const finishedFlights = pastFlights(flights);
   const displayedFlights = filter === 'active' ? activeFlights : finishedFlights;
 
   const handleFlightAdded = useCallback(
@@ -69,7 +88,6 @@ export const FlightsScreen = memo(function FlightsScreen({
   const handleFlightUpdated = useCallback(
     (updated: FlightRecord) => {
       setFlights((prev) => prev.map((f) => (f.id === updated.id ? updated : f)));
-      setSelectedFlight(updated);
     },
     [],
   );
@@ -77,21 +95,18 @@ export const FlightsScreen = memo(function FlightsScreen({
   const handleFlightDeleted = useCallback(
     (id: string) => {
       setFlights((prev) => prev.filter((f) => f.id !== id));
-      setSelectedFlight(null);
+      setSelectedId(null);
     },
     [],
   );
 
   const renderFlightCard = ({ item }: { item: FlightRecord }) => {
-    const depAirport = findAirport(item.depIata);
-    const arrAirport = findAirport(item.arrIata);
-
     const countdownText = departureCountdown(item, Date.now());
 
     return (
       <PressScale
         style={styles.card}
-        onPress={() => setSelectedFlight(item)}
+        onPress={() => setSelectedId(item.id)}
       >
         {/* Card Top: Flight Number & Status */}
         <View style={styles.cardHeader}>
@@ -108,7 +123,7 @@ export const FlightsScreen = memo(function FlightsScreen({
             ]}
           >
             <Text style={styles.cardStatusText}>
-              {item.isFinished ? 'FINISHED' : item.status}
+              {statusLabel(item)}
             </Text>
           </View>
         </View>
@@ -117,7 +132,7 @@ export const FlightsScreen = memo(function FlightsScreen({
         <View style={styles.cardRouteRow}>
           <View style={styles.iataCol}>
             <Text style={styles.iataText}>{item.depIata}</Text>
-            <Text style={styles.airportCityText}>{depAirport?.cityZh ?? item.depIata}</Text>
+            <Text style={styles.airportCityText}>{item.depCity}</Text>
             <Text style={styles.flightTimeText}>{airportTime(item.depScheduledUtc, item.depTz)}</Text>
           </View>
 
@@ -128,12 +143,12 @@ export const FlightsScreen = memo(function FlightsScreen({
               <Text style={styles.planeIcon}>✈️</Text>
               <View style={styles.routeDash} />
             </View>
-            <Text style={styles.distanceText}>{item.distanceMiles} mi</Text>
+            <Text style={styles.distanceText}>{formatFlightDistance(item.distanceKm)}</Text>
           </View>
 
           <View style={[styles.iataCol, styles.alignRight]}>
             <Text style={styles.iataText}>{item.arrIata}</Text>
-            <Text style={styles.airportCityText}>{arrAirport?.cityZh ?? item.arrIata}</Text>
+            <Text style={styles.airportCityText}>{item.arrCity}</Text>
             <Text style={styles.flightTimeText}>{airportTime(item.arrScheduledUtc, item.arrTz)}</Text>
           </View>
         </View>
@@ -142,17 +157,12 @@ export const FlightsScreen = memo(function FlightsScreen({
         <View style={styles.cardFooter}>
           {item.depGate ? (
             <View style={styles.signBadge}>
-              <Text style={styles.signBadgeText}>↗ Gate {item.depGate}</Text>
+              <Text style={styles.signBadgeText}>↗ 登機門 {item.depGate}</Text>
             </View>
           ) : null}
           {item.seat ? (
             <View style={styles.infoBadge}>
               <Text style={styles.infoBadgeText}>💺 {item.seat}</Text>
-            </View>
-          ) : null}
-          {item.pnr ? (
-            <View style={styles.infoBadge}>
-              <Text style={styles.infoBadgeText}>PNR: {item.pnr}</Text>
             </View>
           ) : null}
         </View>
@@ -164,7 +174,7 @@ export const FlightsScreen = memo(function FlightsScreen({
     <View style={styles.screen}>
       {/* Header */}
       <View style={styles.topHeader}>
-        <Text style={styles.pageTitle}>Trips</Text>
+        <Text style={styles.pageTitle}>旅程</Text>
         <PressScale
           style={styles.headerAddBtn}
           onPress={() => setAddSheetVisible(true)}
@@ -181,7 +191,7 @@ export const FlightsScreen = memo(function FlightsScreen({
           onPress={() => setFilter('active')}
         >
           <Text style={[styles.pillText, filter === 'active' && styles.pillTextActive]}>
-            Active ({activeFlights.length})
+            即將出發 ({activeFlights.length})
           </Text>
         </PressScale>
         <PressScale
@@ -189,7 +199,7 @@ export const FlightsScreen = memo(function FlightsScreen({
           onPress={() => setFilter('finished')}
         >
           <Text style={[styles.pillText, filter === 'finished' && styles.pillTextActive]}>
-            Finished ({finishedFlights.length})
+            已結束 ({finishedFlights.length})
           </Text>
         </PressScale>
       </View>
@@ -212,9 +222,12 @@ export const FlightsScreen = memo(function FlightsScreen({
         >
           <Text style={styles.emptyIcon}>✈️</Text>
           <Text style={styles.emptyTitle}>
-            {filter === 'active' ? '目前沒有即將出發的航班' : '尚無已完成的飛行記錄'}
+            {loadFailed
+              ? '讀取航班失敗，請下拉重試'
+              : filter === 'active'
+                ? '目前沒有即將出發的航班'
+                : '尚無已完成的飛行記錄'}
           </Text>
-          <Text style={styles.emptyDesc}>點擊右下角「＋」新增機票與航班</Text>
         </ScrollView>
       ) : (
         <FlatList
@@ -253,7 +266,7 @@ export const FlightsScreen = memo(function FlightsScreen({
       <FlightDetailSheet
         flight={selectedFlight}
         visible={selectedFlight !== null}
-        onClose={() => setSelectedFlight(null)}
+        onClose={() => setSelectedId(null)}
         onFlightUpdated={handleFlightUpdated}
         onFlightDeleted={handleFlightDeleted}
         onViewOnMap={onViewFlightOnMap}
@@ -498,11 +511,6 @@ const styles = StyleSheet.create({
     color: theme.text,
     fontSize: 15,
     fontWeight: '700',
-    textAlign: 'center',
-  },
-  emptyDesc: {
-    color: theme.textFaint,
-    fontSize: 12,
     textAlign: 'center',
   },
 });

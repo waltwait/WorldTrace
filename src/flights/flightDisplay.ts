@@ -9,7 +9,7 @@
  * from three days ago still said it was leaving today.
  */
 
-import type { FlightRecord } from './types';
+import type { FlightRecord, FlightStatus } from './types';
 import { utcToLocal } from './zonedTime';
 
 /** `HH:MM` on the clocks in `timeZone`. */
@@ -33,9 +33,46 @@ function dayNumber(utcMs: number, timeZone: string): number {
  * is the date printed on the ticket — not blocks of 24 hours from now.
  */
 export function departureCountdown(flight: FlightRecord, now: number): string {
+  if (flight.status === 'CANCELLED') return '已取消';
   if (flight.isFinished) return '已完成';
-  if (now >= flight.arrScheduledUtc) return '已抵達';
+  // The clock says it should have landed, not that it did. See syncFlightStatus.
+  if (now >= flight.arrScheduledUtc) return '待確認';
   if (now >= flight.depScheduledUtc) return '飛行中';
   const days = dayNumber(flight.depScheduledUtc, flight.depTz) - dayNumber(now, flight.depTz);
   return days <= 0 ? '今日出發' : `${days} 天`;
+}
+
+const STATUS_LABELS: Record<FlightStatus, string> = {
+  SCHEDULED: '已排定',
+  BOARDING: '登機中',
+  IN_AIR: '飛行中',
+  LANDED: '已降落',
+  DELAYED: '延誤',
+  CANCELLED: '已取消',
+};
+
+export function statusLabel(flight: FlightRecord): string {
+  if (flight.status === 'CANCELLED') return STATUS_LABELS.CANCELLED;
+  return flight.isFinished ? '已完成' : STATUS_LABELS[flight.status];
+}
+
+function isOver(flight: FlightRecord): boolean {
+  return flight.isFinished || flight.status === 'CANCELLED';
+}
+
+/** Still to fly, the next one first: that is the one being looked for. */
+export function upcomingFlights(flights: readonly FlightRecord[]): FlightRecord[] {
+  return flights
+    .filter((f) => !isOver(f))
+    .sort((a, b) => a.depScheduledUtc - b.depScheduledUtc);
+}
+
+/** Flown or cancelled, the latest first. */
+export function pastFlights(flights: readonly FlightRecord[]): FlightRecord[] {
+  return flights.filter(isOver).sort((a, b) => b.depScheduledUtc - a.depScheduledUtc);
+}
+
+/** "Taipei (TPE)". The API names places in English and the app keeps no table of its own. */
+export function airportLabel(city: string | null | undefined, iata: string): string {
+  return city ? `${city} (${iata})` : iata;
 }

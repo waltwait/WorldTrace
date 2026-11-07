@@ -1,20 +1,23 @@
 import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
-import { AIRPORTS_DB, findAirport } from '../flights/airports';
+import { countryName, flagEmoji } from '../flights/countries';
+import { airportLabel } from '../flights/flightDisplay';
 import { computePassportStats, topAirline as findTopAirline } from '../flights/flightStats';
 import type { FlightRecord, PassportStats } from '../flights/types';
 import type { TrackSegment } from '../export/gpx';
 import { database } from '../store/database';
 import { listFlights } from '../store/flights';
 import { BackupScreen } from './BackupScreen';
+import { formatFlightDistance } from './format';
 import { openTab } from './openedTabs';
 import { PressScale } from './PressScale';
+import { SettingsScreen } from './SettingsScreen';
 import { StatsScreen } from './StatsScreen';
 import { TimelineScreen } from './TimelineScreen';
 import { radius, theme } from './theme';
 import type { RecorderState } from './useRecorder';
 
-export type ProfileSubTab = 'explore' | 'timeline' | 'backup';
+export type ProfileSubTab = 'explore' | 'timeline' | 'backup' | 'settings';
 
 export interface ProfileScreenProps {
   recorder: RecorderState;
@@ -22,13 +25,13 @@ export interface ProfileScreenProps {
   onSelectDay: (label: string, segments: TrackSegment[]) => void;
 }
 
-function getCountryInfo(code: string): { name: string; flag: string } {
-  for (const info of Object.values(AIRPORTS_DB)) {
-    if (info.countryCode === code) {
-      return { name: info.country, flag: info.flagEmoji };
-    }
+/** The city of an airport, from a flight that used it. */
+function cityOf(flights: readonly FlightRecord[], iata: string): string | null {
+  for (const f of flights) {
+    if (f.depIata === iata && f.depCity) return f.depCity;
+    if (f.arrIata === iata && f.arrCity) return f.arrCity;
   }
-  return { name: code, flag: '🌍' };
+  return null;
 }
 
 export const ProfileScreen = memo(function ProfileScreen({
@@ -70,20 +73,20 @@ export const ProfileScreen = memo(function ProfileScreen({
 
   const passport: PassportStats = computePassportStats(flights);
   const topAirline = useMemo(() => findTopAirline(flights), [flights]);
-  const homeAirport = passport.topAirportIata ? findAirport(passport.topAirportIata) : null;
+  const homeAirport = passport.topAirportIata;
 
   return (
     <View style={styles.screen}>
       {/* Top Header */}
       <View style={styles.header}>
-        <Text style={styles.title}>Profile</Text>
+        <Text style={styles.title}>我的</Text>
       </View>
 
       {/* Flight Passport Card */}
       <View style={styles.passportCard}>
         <View style={styles.passportHeader}>
           <View style={styles.passportTagRow}>
-            <Text style={styles.passportTag}>WORLDTRACE FLIGHT PASSPORT</Text>
+            <Text style={styles.passportTag}>飛行護照</Text>
           </View>
           <Text style={styles.passportIcon}>✈️</Text>
         </View>
@@ -92,21 +95,21 @@ export const ProfileScreen = memo(function ProfileScreen({
         <View style={styles.metricsGrid}>
           <View style={styles.metricItem}>
             <Text style={styles.metricValue}>{passport.totalFlights}</Text>
-            <Text style={styles.metricLabel}>FLIGHTS</Text>
+            <Text style={styles.metricLabel}>航班</Text>
           </View>
           <View style={styles.metricItem}>
             <Text style={styles.metricValue}>{passport.totalHours}</Text>
-            <Text style={styles.metricLabel}>HOURS</Text>
+            <Text style={styles.metricLabel}>小時</Text>
           </View>
           <View style={styles.metricItem}>
-            <Text style={styles.metricValue}>
-              {passport.totalMiles.toLocaleString()}
+            <Text style={styles.metricValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.5}>
+              {formatFlightDistance(passport.totalKm)}
             </Text>
-            <Text style={styles.metricLabel}>MI</Text>
+            <Text style={styles.metricLabel}>飛行距離</Text>
           </View>
           <View style={styles.metricItem}>
             <Text style={styles.metricValue}>{passport.visitedCountriesCount}</Text>
-            <Text style={styles.metricLabel}>COUNTRIES</Text>
+            <Text style={styles.metricLabel}>國家</Text>
           </View>
         </View>
 
@@ -133,7 +136,7 @@ export const ProfileScreen = memo(function ProfileScreen({
           hitSlop={6}
         >
           <Text style={styles.expandStatsText}>
-            {detailsExpanded ? '收合飛行細節與印章 ▲' : '展開飛行細節與國家印章 ▼'}
+            {detailsExpanded ? '飛行細節 ▲' : '飛行細節 ▼'}
           </Text>
         </PressScale>
 
@@ -152,29 +155,24 @@ export const ProfileScreen = memo(function ProfileScreen({
               <View style={styles.detailItemRow}>
                 <Text style={styles.detailItemLabel}>主場機場：</Text>
                 <Text style={styles.detailItemValue}>
-                  {homeAirport.cityZh ?? homeAirport.city} ({homeAirport.iata})
+                  {airportLabel(cityOf(flights, homeAirport), homeAirport)}
                 </Text>
               </View>
             ) : null}
 
-            <View style={styles.stampsSection}>
-              <Text style={styles.stampsTitle}>數位國家印章 (Country Stamps)</Text>
-              {passport.visitedCountryCodes.length === 0 ? (
-                <Text style={styles.stampsEmpty}>完成飛行記錄後解鎖國家印章</Text>
-              ) : (
+            {passport.visitedCountryCodes.length > 0 ? (
+              <View style={styles.stampsSection}>
+                <Text style={styles.stampsTitle}>國家印章</Text>
                 <View style={styles.stampsGrid}>
-                  {passport.visitedCountryCodes.map((code) => {
-                    const country = getCountryInfo(code);
-                    return (
-                      <View key={code} style={styles.stampBadge}>
-                        <Text style={styles.stampFlag}>{country.flag}</Text>
-                        <Text style={styles.stampName}>{country.name}</Text>
-                      </View>
-                    );
-                  })}
+                  {passport.visitedCountryCodes.map((code) => (
+                    <View key={code} style={styles.stampBadge}>
+                      <Text style={styles.stampFlag}>{flagEmoji(code)}</Text>
+                      <Text style={styles.stampName}>{countryName(code)}</Text>
+                    </View>
+                  ))}
                 </View>
-              )}
-            </View>
+              </View>
+            ) : null}
           </View>
         ) : null}
       </View>
@@ -187,7 +185,7 @@ export const ProfileScreen = memo(function ProfileScreen({
           onPress={() => selectSubTab('explore')}
         >
           <Text style={[styles.tabText, subTab === 'explore' && styles.tabTextActive]}>
-            Explore
+            探索
           </Text>
         </PressScale>
 
@@ -197,7 +195,7 @@ export const ProfileScreen = memo(function ProfileScreen({
           onPress={() => selectSubTab('timeline')}
         >
           <Text style={[styles.tabText, subTab === 'timeline' && styles.tabTextActive]}>
-            Timeline
+            時間軸
           </Text>
         </PressScale>
 
@@ -207,7 +205,17 @@ export const ProfileScreen = memo(function ProfileScreen({
           onPress={() => selectSubTab('backup')}
         >
           <Text style={[styles.tabText, subTab === 'backup' && styles.tabTextActive]}>
-            Backup
+            備份
+          </Text>
+        </PressScale>
+
+        <PressScale
+          containerStyle={styles.tabSlot}
+          style={[styles.tabSegment, subTab === 'settings' && styles.tabSegmentActive]}
+          onPress={() => selectSubTab('settings')}
+        >
+          <Text style={[styles.tabText, subTab === 'settings' && styles.tabTextActive]}>
+            設定
           </Text>
         </PressScale>
       </View>
@@ -233,6 +241,12 @@ export const ProfileScreen = memo(function ProfileScreen({
         {openedSubTabs.has('backup') ? (
           <View style={[styles.subPage, subTab !== 'backup' && styles.subPageHidden]}>
             <BackupScreen hideTitle />
+          </View>
+        ) : null}
+
+        {openedSubTabs.has('settings') ? (
+          <View style={[styles.subPage, subTab !== 'settings' && styles.subPageHidden]}>
+            <SettingsScreen />
           </View>
         ) : null}
       </View>
@@ -380,11 +394,6 @@ const styles = StyleSheet.create({
     color: '#e0e7ff',
     fontSize: 11,
     fontWeight: '800',
-  },
-  stampsEmpty: {
-    color: '#a5b4fc',
-    fontSize: 11,
-    fontStyle: 'italic',
   },
   stampsGrid: {
     flexDirection: 'row',

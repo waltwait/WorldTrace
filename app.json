@@ -57,7 +57,8 @@
         {
           "photosPermission": "WorldTrace 存取相片以讀取機票或登機證圖片。"
         }
-      ]
+      ],
+      "expo-secure-store"
     ]
   }
 }

@@ -1,13 +1,23 @@
 import { describe, expect, test } from 'vitest';
-import { findAirport } from './airports';
 import { buildGreatCircleArc } from './greatCircle';
 import { routeCamera } from './routeCamera';
 
 const VIEW = { width: 400, height: 800 };
 const PADDING = { top: 120, bottom: 140, left: 60, right: 60 };
 
+const AIRPORTS: Record<string, { lat: number; lon: number }> = {
+  TPE: { lat: 25.0797, lon: 121.2342 },
+  NRT: { lat: 35.772, lon: 140.3929 },
+  LAX: { lat: 33.9416, lon: -118.4085 },
+  JFK: { lat: 40.6413, lon: -73.7781 },
+  LHR: { lat: 51.47, lon: -0.4543 },
+  SYD: { lat: -33.9399, lon: 151.1753 },
+  HND: { lat: 35.5494, lon: 139.7798 },
+  PVG: { lat: 31.1443, lon: 121.8083 },
+};
+
 function arc(from: string, to: string) {
-  return buildGreatCircleArc(findAirport(from)!, findAirport(to)!, 40);
+  return buildGreatCircleArc(AIRPORTS[from], AIRPORTS[to], 40);
 }
 
 describe('routeCamera', () => {

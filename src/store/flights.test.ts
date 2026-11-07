@@ -24,33 +24,42 @@ beforeEach(async () => {
 const sampleFlight: FlightRecord = {
   id: 'flight-1',
   flightNumber: 'CI501',
+  depDate: '2026-12-31',
+  depTime: '08:45',
+  seat: '24A',
+  notes: 'Window seat booked',
+  isFinished: false,
+  createdAt: 1766900000000,
+
+  scheduleSource: 'api',
   airlineCode: 'CI',
   airlineName: 'China Airlines',
-  alliance: 'SkyTeam',
   depIata: 'TPE',
   arrIata: 'PVG',
   depScheduledUtc: 1767141900000,
-  depEstimatedUtc: 1767142500000,
   arrScheduledUtc: 1767149400000,
-  arrEstimatedUtc: 1767150000000,
   depTz: 'Asia/Taipei',
   arrTz: 'Asia/Shanghai',
   depTerminal: '2',
   arrTerminal: '1',
+  depCity: 'Taipei',
+  arrCity: 'Shanghai',
+  depCountry: 'TW',
+  arrCountry: 'CN',
+  depLat: 25.08,
+  depLon: 121.23,
+  arrLat: 31.14,
+  arrLon: 121.81,
+  distanceKm: 676.5,
+  durationMinutes: 125,
+
+  status: 'SCHEDULED',
+  depEstimatedUtc: 1767142500000,
+  arrEstimatedUtc: 1767150000000,
   depGate: 'D6',
   arrGate: '18',
   baggageBelt: '7',
-  status: 'SCHEDULED',
-  distanceMiles: 420.0,
-  durationMinutes: 125,
-  seat: '24A',
-  cabinClass: 'Economy',
-  pnr: '7X9K2M',
-  notes: 'Window seat booked',
-  notificationsEnabled: true,
-  isFinished: false,
   lastSyncedAt: 1767000000000,
-  createdAt: 1766900000000,
 };
 
 describe('flights store', () => {
@@ -99,6 +108,70 @@ describe('flights store', () => {
     expect(allFlights).toHaveLength(3);
   });
 
+  // Each table holds what came from one source, so what is in which is the point.
+  describe('where each thing is kept', () => {
+    const row = (table: string, key: string) =>
+      driver.get<Record<string, unknown>>(`SELECT * FROM ${table} WHERE ${key} = ?`, ['flight-1']);
+
+    beforeEach(() => insertFlight(driver, sampleFlight));
+
+    test('what the user confirmed is in the main table', async () => {
+      expect(await row('flights', 'id')).toEqual({
+        id: 'flight-1',
+        flight_number: 'CI501',
+        dep_date: '2026-12-31',
+        dep_time: '08:45',
+        seat: '24A',
+        notes: 'Window seat booked',
+        is_finished: 0,
+        created_at: 1766900000000,
+      });
+    });
+
+    test('the timetable is in the schedule, saying where it came from', async () => {
+      const schedule = await row('flight_schedule', 'flight_id');
+      expect(schedule?.source).toBe('api');
+      expect(schedule?.dep_iata).toBe('TPE');
+      expect(schedule?.distance_km).toBe(676.5);
+      expect(schedule).not.toHaveProperty('status');
+      expect(schedule).not.toHaveProperty('dep_gate');
+    });
+
+    test('what changes is in the status', async () => {
+      const status = await row('flight_status', 'flight_id');
+      expect(status?.status).toBe('SCHEDULED');
+      expect(status?.dep_gate).toBe('D6');
+      expect(status?.last_synced_at).toBe(1767000000000);
+      expect(status).not.toHaveProperty('dep_iata');
+    });
+  });
+
+  test('a booking code has no column anywhere', async () => {
+    for (const table of ['flights', 'flight_schedule', 'flight_status']) {
+      const columns = await driver.all<{ name: string }>(
+        `SELECT name FROM pragma_table_info('${table}')`,
+      );
+      expect(columns.map((c) => c.name)).not.toContain('pnr');
+    }
+  });
+
+  test('a flight that cannot be written whole is not left half written', async () => {
+    const broken = { ...sampleFlight, status: null as unknown as FlightRecord['status'] };
+
+    await expect(insertFlight(driver, broken)).rejects.toThrow();
+
+    expect(await driver.get('SELECT id FROM flights')).toBeUndefined();
+  });
+
+  test('deleting a flight takes its schedule and status with it', async () => {
+    await insertFlight(driver, sampleFlight);
+
+    await deleteFlight(driver, 'flight-1');
+
+    expect(await driver.get('SELECT flight_id FROM flight_schedule')).toBeUndefined();
+    expect(await driver.get('SELECT flight_id FROM flight_status')).toBeUndefined();
+  });
+
   test('updates flight fields', async () => {
     await insertFlight(driver, sampleFlight);
 
@@ -116,6 +189,15 @@ describe('flights store', () => {
     expect(updated?.isFinished).toBe(true);
     // Other fields untouched
     expect(updated?.flightNumber).toBe('CI501');
+  });
+
+  test('one update can touch all three tables, or just one', async () => {
+    await insertFlight(driver, sampleFlight);
+
+    await updateFlight(driver, 'flight-1', { depTerminal: 'T1' });
+
+    const updated = await getFlightById(driver, 'flight-1');
+    expect(updated).toEqual({ ...sampleFlight, depTerminal: 'T1' });
   });
 
   test('deletes a flight and its associated docs', async () => {

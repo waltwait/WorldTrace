@@ -26,7 +26,7 @@ import { ProfileScreen } from './src/ui/ProfileScreen';
 import { theme } from './src/ui/theme';
 import { useRecorder } from './src/ui/useRecorder';
 
-const TABS = ['Trips', 'Map', 'Profile'] as const;
+const TABS = ['旅程', '地圖', '我的'] as const;
 
 /**
  * Backs up in the background when the app comes to the foreground.

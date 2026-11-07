@@ -12,9 +12,15 @@
  * order of copy, insert and delete runs under test.
  */
 
-import type { FlightDocRecord } from '../flights/types';
+import type { FlightDocRecord, FlightRecord } from '../flights/types';
 import type { SqlDriver } from './driver';
-import { deleteFlight, deleteFlightDoc, insertFlightDoc, listFlightDocs } from './flights';
+import {
+  deleteFlight,
+  deleteFlightDoc,
+  insertFlight,
+  insertFlightDoc,
+  listFlightDocs,
+} from './flights';
 
 export interface DocFiles {
   /** Copies `sourceUri` into permanent storage as `name`; returns the copy's URI. */
@@ -48,6 +54,28 @@ export interface PickedDoc {
   fileName: string;
   mimeType: string;
   now: number;
+}
+
+/**
+ * A new flight and its ticket, or neither. The sheet stays open on an error and
+ * saving again makes a new id, so a flight left behind by a ticket that could
+ * not be kept came back as the same flight twice.
+ */
+export async function saveNewFlight(
+  driver: SqlDriver,
+  files: DocFiles,
+  flight: FlightRecord,
+  doc: Omit<PickedDoc, 'flightId'> | null,
+): Promise<void> {
+  await insertFlight(driver, flight);
+  if (!doc) return;
+
+  try {
+    await attachFlightDoc(driver, files, { ...doc, flightId: flight.id });
+  } catch (err) {
+    await deleteFlight(driver, flight.id);
+    throw err;
+  }
 }
 
 export async function attachFlightDoc(

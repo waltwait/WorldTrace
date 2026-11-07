@@ -17,7 +17,7 @@ import * as Location from 'expo-location';
 import * as TaskManager from 'expo-task-manager';
 import type { SqlDriver } from '../store/driver';
 import { createExpoDriver } from '../store/expoDriver';
-import { migrate } from '../store/schema';
+import { migrateTrack } from '../store/schema';
 import { createTracker, type Tracker } from '../store/tracker';
 import { readDeviceFlags } from './expoLocationSource';
 import { startRecordingTask } from './recordingStart';
@@ -44,7 +44,7 @@ let pipelineDriver: SqlDriver | null = null;
 function tracker(): Promise<Tracker> {
   pipeline ??= (async () => {
     const driver = await createExpoDriver();
-    await migrate(driver);
+    await migrateTrack(driver);
     pipelineDriver = driver;
     return createTracker({ driver });
   })();

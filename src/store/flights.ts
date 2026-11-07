@@ -5,36 +5,88 @@
 import type { FlightDocRecord, FlightRecord } from '../flights/types';
 import type { SqlDriver, SqlValue } from './driver';
 
-interface FlightRow {
-  id: string;
-  flight_number: string;
-  airline_code: string;
-  airline_name: string;
-  alliance: string | null;
-  dep_iata: string;
-  arr_iata: string;
-  dep_scheduled_utc: number;
-  dep_estimated_utc: number | null;
-  arr_scheduled_utc: number;
-  arr_estimated_utc: number | null;
-  dep_tz: string;
-  arr_tz: string;
-  dep_terminal: string | null;
-  arr_terminal: string | null;
-  dep_gate: string | null;
-  arr_gate: string | null;
-  baggage_belt: string | null;
-  status: string;
-  distance_miles: number;
-  duration_minutes: number;
-  seat: string | null;
-  cabin_class: string | null;
-  pnr: string | null;
-  notes: string | null;
-  notifications_enabled: number;
-  is_finished: number;
-  last_synced_at: number | null;
-  created_at: number;
+/**
+ * Which field lives in which table, and under what column. A flight goes in and
+ * comes out whole; only this file knows there are three tables.
+ */
+const TABLES: ReadonlyArray<{
+  name: string;
+  key: string;
+  columns: Partial<Record<keyof FlightRecord, string>>;
+}> = [
+  {
+    name: 'flights',
+    key: 'id',
+    columns: {
+      flightNumber: 'flight_number',
+      depDate: 'dep_date',
+      depTime: 'dep_time',
+      seat: 'seat',
+      notes: 'notes',
+      isFinished: 'is_finished',
+      createdAt: 'created_at',
+    },
+  },
+  {
+    name: 'flight_schedule',
+    key: 'flight_id',
+    columns: {
+      scheduleSource: 'source',
+      airlineCode: 'airline_code',
+      airlineName: 'airline_name',
+      depIata: 'dep_iata',
+      arrIata: 'arr_iata',
+      depScheduledUtc: 'dep_scheduled_utc',
+      arrScheduledUtc: 'arr_scheduled_utc',
+      depTz: 'dep_tz',
+      arrTz: 'arr_tz',
+      depTerminal: 'dep_terminal',
+      arrTerminal: 'arr_terminal',
+      depCity: 'dep_city',
+      arrCity: 'arr_city',
+      depCountry: 'dep_country',
+      arrCountry: 'arr_country',
+      depLat: 'dep_lat',
+      depLon: 'dep_lon',
+      arrLat: 'arr_lat',
+      arrLon: 'arr_lon',
+      distanceKm: 'distance_km',
+      durationMinutes: 'duration_minutes',
+    },
+  },
+  {
+    name: 'flight_status',
+    key: 'flight_id',
+    columns: {
+      status: 'status',
+      depEstimatedUtc: 'dep_estimated_utc',
+      arrEstimatedUtc: 'arr_estimated_utc',
+      depGate: 'dep_gate',
+      arrGate: 'arr_gate',
+      baggageBelt: 'baggage_belt',
+      lastSyncedAt: 'last_synced_at',
+    },
+  },
+];
+
+const JOINED = `SELECT * FROM flights f
+  JOIN flight_schedule s ON s.flight_id = f.id
+  JOIN flight_status t ON t.flight_id = f.id`;
+
+type FlightRow = Record<string, SqlValue>;
+
+function rowToFlight(row: FlightRow): FlightRecord {
+  const flight: Record<string, unknown> = { id: row.id };
+  for (const { columns } of TABLES) {
+    for (const [field, column] of Object.entries(columns)) flight[field] = row[column] ?? null;
+  }
+  flight.isFinished = Boolean(row.is_finished);
+  return flight as unknown as FlightRecord;
+}
+
+function toSql(value: unknown): SqlValue {
+  if (typeof value === 'boolean') return value ? 1 : 0;
+  return typeof value === 'string' || typeof value === 'number' ? value : null;
 }
 
 interface FlightDocRow {
@@ -44,40 +96,6 @@ interface FlightDocRow {
   local_uri: string;
   mime_type: string;
   created_at: number;
-}
-
-function rowToFlight(row: FlightRow): FlightRecord {
-  return {
-    id: row.id,
-    flightNumber: row.flight_number,
-    airlineCode: row.airline_code,
-    airlineName: row.airline_name,
-    alliance: (row.alliance as FlightRecord['alliance']) ?? null,
-    depIata: row.dep_iata,
-    arrIata: row.arr_iata,
-    depScheduledUtc: row.dep_scheduled_utc,
-    depEstimatedUtc: row.dep_estimated_utc ?? null,
-    arrScheduledUtc: row.arr_scheduled_utc,
-    arrEstimatedUtc: row.arr_estimated_utc ?? null,
-    depTz: row.dep_tz,
-    arrTz: row.arr_tz,
-    depTerminal: row.dep_terminal ?? null,
-    arrTerminal: row.arr_terminal ?? null,
-    depGate: row.dep_gate ?? null,
-    arrGate: row.arr_gate ?? null,
-    baggageBelt: row.baggage_belt ?? null,
-    status: row.status as FlightRecord['status'],
-    distanceMiles: row.distance_miles,
-    durationMinutes: row.duration_minutes,
-    seat: row.seat ?? null,
-    cabinClass: (row.cabin_class as FlightRecord['cabinClass']) ?? null,
-    pnr: row.pnr ?? null,
-    notes: row.notes ?? null,
-    notificationsEnabled: Boolean(row.notifications_enabled),
-    isFinished: Boolean(row.is_finished),
-    lastSyncedAt: row.last_synced_at ?? null,
-    createdAt: row.created_at,
-  };
 }
 
 function rowToDoc(row: FlightDocRow): FlightDocRecord {
@@ -92,51 +110,24 @@ function rowToDoc(row: FlightDocRow): FlightDocRecord {
 }
 
 export async function insertFlight(driver: SqlDriver, flight: FlightRecord): Promise<void> {
-  await driver.run(
-    `INSERT OR REPLACE INTO flights (
-      id, flight_number, airline_code, airline_name, alliance,
-      dep_iata, arr_iata, dep_scheduled_utc, dep_estimated_utc,
-      arr_scheduled_utc, arr_estimated_utc, dep_tz, arr_tz,
-      dep_terminal, arr_terminal, dep_gate, arr_gate, baggage_belt,
-      status, distance_miles, duration_minutes, seat, cabin_class,
-      pnr, notes, notifications_enabled, is_finished, last_synced_at, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      flight.id,
-      flight.flightNumber,
-      flight.airlineCode,
-      flight.airlineName,
-      flight.alliance ?? null,
-      flight.depIata,
-      flight.arrIata,
-      flight.depScheduledUtc,
-      flight.depEstimatedUtc ?? null,
-      flight.arrScheduledUtc,
-      flight.arrEstimatedUtc ?? null,
-      flight.depTz,
-      flight.arrTz,
-      flight.depTerminal ?? null,
-      flight.arrTerminal ?? null,
-      flight.depGate ?? null,
-      flight.arrGate ?? null,
-      flight.baggageBelt ?? null,
-      flight.status,
-      flight.distanceMiles,
-      flight.durationMinutes,
-      flight.seat ?? null,
-      flight.cabinClass ?? null,
-      flight.pnr ?? null,
-      flight.notes ?? null,
-      flight.notificationsEnabled ? 1 : 0,
-      flight.isFinished ? 1 : 0,
-      flight.lastSyncedAt ?? null,
-      flight.createdAt,
-    ],
-  );
+  try {
+    for (const { name, key, columns } of TABLES) {
+      const fields = Object.keys(columns) as Array<keyof FlightRecord>;
+      const names = [key, ...fields.map((field) => columns[field])];
+      await driver.run(
+        `INSERT OR REPLACE INTO ${name} (${names.join(', ')}) VALUES (${names.map(() => '?').join(', ')})`,
+        [flight.id, ...fields.map((field) => toSql(flight[field]))],
+      );
+    }
+  } catch (err) {
+    // The list joins all three: a flight half written would just vanish.
+    await deleteFlight(driver, flight.id);
+    throw err;
+  }
 }
 
 export async function getFlightById(driver: SqlDriver, id: string): Promise<FlightRecord | null> {
-  const row = await driver.get<FlightRow>('SELECT * FROM flights WHERE id = ?', [id]);
+  const row = await driver.get<FlightRow>(`${JOINED} WHERE f.id = ?`, [id]);
   return row ? rowToFlight(row) : null;
 }
 
@@ -146,15 +137,13 @@ export async function listFlights(
 ): Promise<FlightRecord[]> {
   if (filter?.isFinished !== undefined) {
     const rows = await driver.all<FlightRow>(
-      'SELECT * FROM flights WHERE is_finished = ? ORDER BY dep_scheduled_utc ASC',
+      `${JOINED} WHERE f.is_finished = ? ORDER BY s.dep_scheduled_utc ASC`,
       [filter.isFinished ? 1 : 0],
     );
     return rows.map(rowToFlight);
   }
 
-  const rows = await driver.all<FlightRow>(
-    'SELECT * FROM flights ORDER BY dep_scheduled_utc DESC',
-  );
+  const rows = await driver.all<FlightRow>(`${JOINED} ORDER BY s.dep_scheduled_utc DESC`);
   return rows.map(rowToFlight);
 }
 
@@ -163,60 +152,19 @@ export async function updateFlight(
   id: string,
   fields: Partial<FlightRecord>,
 ): Promise<void> {
-  const mapping: Record<string, string> = {
-    flightNumber: 'flight_number',
-    airlineCode: 'airline_code',
-    airlineName: 'airline_name',
-    alliance: 'alliance',
-    depIata: 'dep_iata',
-    arrIata: 'arr_iata',
-    depScheduledUtc: 'dep_scheduled_utc',
-    depEstimatedUtc: 'dep_estimated_utc',
-    arrScheduledUtc: 'arr_scheduled_utc',
-    arrEstimatedUtc: 'arr_estimated_utc',
-    depTz: 'dep_tz',
-    arrTz: 'arr_tz',
-    depTerminal: 'dep_terminal',
-    arrTerminal: 'arr_terminal',
-    depGate: 'dep_gate',
-    arrGate: 'arr_gate',
-    baggageBelt: 'baggage_belt',
-    status: 'status',
-    distanceMiles: 'distance_miles',
-    durationMinutes: 'duration_minutes',
-    seat: 'seat',
-    cabinClass: 'cabin_class',
-    pnr: 'pnr',
-    notes: 'notes',
-    notificationsEnabled: 'notifications_enabled',
-    isFinished: 'is_finished',
-    lastSyncedAt: 'last_synced_at',
-  };
+  for (const { name, key, columns } of TABLES) {
+    const changed = (Object.keys(fields) as Array<keyof FlightRecord>).filter((f) => columns[f]);
+    if (changed.length === 0) continue;
 
-  const setClauses: string[] = [];
-  const values: SqlValue[] = [];
-
-  for (const [key, val] of Object.entries(fields)) {
-    const col = mapping[key];
-    if (!col) continue;
-
-    setClauses.push(`${col} = ?`);
-    if (typeof val === 'boolean') {
-      values.push(val ? 1 : 0);
-    } else if (typeof val === 'string' || typeof val === 'number') {
-      values.push(val);
-    } else {
-      values.push(null);
-    }
+    await driver.run(
+      `UPDATE ${name} SET ${changed.map((f) => `${columns[f]} = ?`).join(', ')} WHERE ${key} = ?`,
+      [...changed.map((f) => toSql(fields[f])), id],
+    );
   }
-
-  if (setClauses.length === 0) return;
-
-  values.push(id);
-  await driver.run(`UPDATE flights SET ${setClauses.join(', ')} WHERE id = ?`, values);
 }
 
 export async function deleteFlight(driver: SqlDriver, id: string): Promise<void> {
+  // The schedule, the status and the documents go with it (ON DELETE CASCADE).
   await driver.run('DELETE FROM flights WHERE id = ?', [id]);
 }
 

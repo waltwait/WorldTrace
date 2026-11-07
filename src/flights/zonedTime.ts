@@ -17,6 +17,8 @@ interface WallClock {
   minute: number;
 }
 
+const pad = (n: number) => String(n).padStart(2, '0');
+
 const DATE = /^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/;
 const TIME = /^(\d{1,2}):(\d{2})$/;
 
@@ -44,21 +46,42 @@ export function isValidDate(date: string): boolean {
   return parseWallClock(date, '00:00') !== null;
 }
 
+/** A date as the status API wants it, or null if it is not a date. */
+export function normalizeDate(date: string): string | null {
+  const w = parseWallClock(date, '00:00');
+  return w && `${w.year}-${pad(w.month)}-${pad(w.day)}`;
+}
+
 /** A time such as 07:30 or 7:30. */
 export function isValidTime(time: string): boolean {
   return parseWallClock('2000-01-01', time) !== null;
 }
 
+/**
+ * Building a formatter costs far more than using one, and a list of flights
+ * reads several clocks a card, so each zone gets one.
+ */
+const formatters = new Map<string, Intl.DateTimeFormat>();
+
+function formatterFor(timeZone: string): Intl.DateTimeFormat {
+  let formatter = formatters.get(timeZone);
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat('en-US', {
+      timeZone,
+      year: 'numeric',
+      month: 'numeric',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: 'numeric',
+      hourCycle: 'h23',
+    });
+    formatters.set(timeZone, formatter);
+  }
+  return formatter;
+}
+
 function wallClockAt(utcMs: number, timeZone: string): WallClock {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone,
-    year: 'numeric',
-    month: 'numeric',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: 'numeric',
-    hourCycle: 'h23',
-  }).formatToParts(new Date(utcMs));
+  const parts = formatterFor(timeZone).formatToParts(new Date(utcMs));
   const p: Record<string, number> = {};
   for (const part of parts) {
     if (part.type !== 'literal') p[part.type] = Number(part.value);
@@ -96,8 +119,6 @@ export function localToUtc(date: string, time: string, timeZone: string): number
   }
 }
 
-const pad = (n: number) => String(n).padStart(2, '0');
-
 /** What the clocks in `timeZone` read at `utcMs`, as `YYYY-MM-DD` and `HH:MM`. */
 export function utcToLocal(utcMs: number, timeZone: string): { date: string; time: string } {
   const w = wallClockAt(utcMs, timeZone);
@@ -122,4 +143,19 @@ export function offsetToZone(text: string): string | null {
   if (hours < -12 || hours > 14) return null;
   if (hours === 0) return 'Etc/UTC';
   return hours > 0 ? `Etc/GMT-${hours}` : `Etc/GMT+${-hours}`;
+}
+
+/** How far the clocks at the arrival are from those at the departure, on that date. */
+export function arrivalTimeDifference(
+  depTz: string,
+  arrTz: string,
+  atMs: number,
+): { hasDifference: boolean; headline: string } {
+  try {
+    const hours = (offsetMinutes(arrTz, atMs) - offsetMinutes(depTz, atMs)) / 60;
+    if (hours === 0) return { hasDifference: false, headline: '' };
+    return { hasDifference: true, headline: `${hours > 0 ? '快' : '慢'} ${Math.abs(hours)} 小時` };
+  } catch {
+    return { hasDifference: false, headline: '' };
+  }
 }

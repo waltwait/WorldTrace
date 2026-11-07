@@ -11,8 +11,12 @@ import type { StyleSpecification } from '@maplibre/maplibre-gl-style-spec';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import type { TrackSegment } from '../export/gpx';
-import { findAirport } from '../flights/airports';
-import { buildFlightArcsGeoJson, buildGreatCircleArc, routesKey } from '../flights/greatCircle';
+import {
+  buildFlightArcsGeoJson,
+  buildGreatCircleArc,
+  flightEnds,
+  routesKey,
+} from '../flights/greatCircle';
 import { routeCamera } from '../flights/routeCamera';
 import type { FlightRecord } from '../flights/types';
 import { database } from '../store/database';
@@ -64,6 +68,9 @@ export const MapScreen = memo(function MapScreen({
 }: MapScreenProps) {
   const [mapLayerMode, setMapLayerMode] = useState<'all' | 'fog' | 'flights'>('all');
   const [flights, setFlights] = useState<FlightRecord[]>([]);
+  // The map mounts on its first visit, and "view on map" can be what opens it:
+  // a camera moved before the map has loaded goes nowhere.
+  const [mapReady, setMapReady] = useState(false);
   const cameraRef = useRef<CameraRef>(null);
   const { width, height } = useWindowDimensions();
 
@@ -88,21 +95,20 @@ export const MapScreen = memo(function MapScreen({
   }, [active]);
 
   useEffect(() => {
-    if (!focusedFlight) return;
+    if (!focusedFlight || !mapReady) return;
     if (mapLayerMode === 'fog') {
       setMapLayerMode('all');
     }
-    const dep = findAirport(focusedFlight.depIata);
-    const arr = findAirport(focusedFlight.arrIata);
-    if (dep && arr) {
+    const ends = flightEnds(focusedFlight);
+    if (ends) {
       // Framed from the arc itself, the short way round: a box from the two
       // airports' smallest to largest longitude framed TPE→LAX on Africa.
-      const route = buildGreatCircleArc(dep, arr, 40);
+      const route = buildGreatCircleArc(ends.dep, ends.arr, 40);
       const padding = { top: 120, bottom: 140, left: 60, right: 60 };
       const { center, zoom } = routeCamera(route, { width, height }, padding);
       cameraRef.current?.easeTo({ center, zoom, padding, duration: 1200 });
     }
-  }, [focusedFlight]);
+  }, [focusedFlight, mapReady]);
 
   // A string, made once per change of route: GeoJSONSource stringifies an
   // object on every render (see useFog).
@@ -159,7 +165,10 @@ export const MapScreen = memo(function MapScreen({
         androidView="texture"
         onRegionIsChanging={(event) => onMapMoving(event.nativeEvent)}
         onRegionDidChange={(event) => onMapView(event.nativeEvent)}
-        onDidFinishLoadingMap={() => void reportView()}
+        onDidFinishLoadingMap={() => {
+          setMapReady(true);
+          void reportView();
+        }}
       >
         {/* "default" follows your position but never touches the bearing, so
             north stays up. "course" and "heading" both spin the map under you,

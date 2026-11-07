@@ -2,9 +2,7 @@
  * Great Circle distance and spherical arc geometry calculations.
  */
 
-import { findAirport } from './airports';
-
-const EARTH_RADIUS_MILES = 3958.7613;
+const EARTH_RADIUS_KM = 6371.0088;
 
 function toRadians(degrees: number): number {
   return (degrees * Math.PI) / 180;
@@ -15,9 +13,9 @@ function toDegrees(radians: number): number {
 }
 
 /**
- * Calculates Great Circle flight distance in miles using the Haversine formula.
+ * Calculates Great Circle flight distance in kilometres using the Haversine formula.
  */
-export function calculateFlightMiles(
+export function calculateFlightKm(
   from: { lat: number; lon: number },
   to: { lat: number; lon: number },
 ): number {
@@ -35,7 +33,7 @@ export function calculateFlightMiles(
     Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
 
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(Math.max(0, 1 - a)));
-  return Math.round(EARTH_RADIUS_MILES * c * 10) / 10;
+  return Math.round(EARTH_RADIUS_KM * c * 10) / 10;
 }
 
 type Vector3 = [number, number, number];
@@ -137,31 +135,43 @@ export interface FlightArcsFeatureCollection {
   }>;
 }
 
+type Positioned = {
+  depLat?: number | null;
+  depLon?: number | null;
+  arrLat?: number | null;
+  arrLon?: number | null;
+};
+
+/** Both ends of a flight, or null for one typed in with no positions. */
+export function flightEnds(
+  flight: Positioned,
+): { dep: { lat: number; lon: number }; arr: { lat: number; lon: number } } | null {
+  const { depLat, depLon, arrLat, arrLon } = flight;
+  if (depLat == null || depLon == null || arrLat == null || arrLon == null) return null;
+  return { dep: { lat: depLat, lon: depLon }, arr: { lat: arrLat, lon: arrLon } };
+}
+
 /**
  * Converts a list of flights into a GeoJSON FeatureCollection of Great Circle LineStrings.
  */
 export function buildFlightArcsGeoJson(
-  flights: Array<{
-    depIata: string;
-    arrIata: string;
-    airlineCode?: string;
-    flightNumber?: string;
-  }>,
+  flights: Array<
+    Positioned & {
+      depIata: string;
+      arrIata: string;
+      airlineCode?: string;
+      flightNumber?: string;
+    }
+  >,
   numPointsPerArc = 40,
 ): FlightArcsFeatureCollection {
   const features: FlightArcsFeatureCollection['features'] = [];
 
   for (const flight of flights) {
-    const dep = findAirport(flight.depIata);
-    const arr = findAirport(flight.arrIata);
+    const ends = flightEnds(flight);
+    if (!ends) continue;
 
-    if (!dep || !arr) continue;
-
-    const coordinates = buildGreatCircleArc(
-      { lat: dep.lat, lon: dep.lon },
-      { lat: arr.lat, lon: arr.lon },
-      numPointsPerArc,
-    );
+    const coordinates = buildGreatCircleArc(ends.dep, ends.arr, numPointsPerArc);
 
     features.push({
       type: 'Feature',

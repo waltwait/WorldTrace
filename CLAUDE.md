@@ -51,8 +51,10 @@ src/export/      GPX and database snapshots
 src/progress/    levels and tiered achievements
 src/places/      reverse geocoding, a few tiles per launch
 src/flights/     flights, kept apart from the track: the add form (flightForm),
-                 airport-local time (zonedTime), ticket parsing, status polling,
-                 great-circle arcs, passport stats
+                 airport-local time (zonedTime), reading a ticket on the phone
+                 (readTicket, ticketFacts), lookup and status polling
+                 (flightStatusApi), great-circle arcs, passport stats
+src/settings/    API keys: entered on the settings page, kept in the Keystore
 src/ui/          screens, formatting, the app's own dialog
 ```
 
@@ -235,6 +237,38 @@ quietly wrong.
   and leaves gate, terminal, seat and cabin empty when nobody gave them; the
   first version of the sheet made all of those up. Ticket times are local to
   their airport (`flights/zonedTime.ts`), never the phone's zone.
+- A clock never finishes a flight. Only the status API saying Arrived, the user
+  marking it, or typing in a trip already over does: `syncFlightStatus` hands
+  back the same flight when nothing comes back, and polling stops a day past the
+  scheduled arrival. It used to work a status out from the time, which landed
+  cancelled and missed flights and stamped them into the passport.
+- A ticket gives three things and no more: flight number, date and time, seat
+  (`flights/ticketFacts.ts`). The status API supplies the rest. Text recognition
+  runs on the phone, and the picture and any turned copy are deleted once read
+  (`flights/readTicket.ts`): nothing is uploaded, and the booking code, the name
+  and the barcode, which holds both, are never read or kept. A booking code is
+  not stored or shown anywhere.
+- Flights are stored by where each thing came from, in three tables
+  (`store/flightSchema.ts`): `flights` what the user confirmed, `flight_schedule`
+  the timetable with a `source` of `api` or `user`, `flight_status` what changes.
+  `store/flights.ts` joins them, so nothing else knows there are three. A flight
+  is looked up by number and date however it was entered; the airports, times and
+  zones are typed by hand only when nothing was found.
+- There is no table of airports. City, country, position and zone come from the
+  status API and are kept on the flight, so a flight typed by hand has none of
+  them: no arc, no distance, no stamp. Cities read in English, as the API gives
+  them, like 「Taipei (TPE)」. Country names are in `flights/countries.ts`, made by
+  `tools/make-countries.mjs`.
+- The flight tables migrate on the screens' connection only (`migrate`); the
+  background task runs `migrateTrack`. Two connections changing them at once
+  could fail, and on that one it would stop recording without a word.
+- Tickets often print no year. `flights/ticketYear.ts` works it out, from a
+  printed weekday if there is one; without one the form says it is a guess.
+- The flight API key is entered on 我的 › 設定 and kept in the Android Keystore
+  (`settings/`), never in the database, a backup or the bundle: `EXPO_PUBLIC_`
+  values are written into the APK in plain text and releases are public. The
+  Google web client ID stays in `.env.local`: it is public, and tied to the
+  build's signature.
 - Every hook runs before any `return`. No component can be mounted under
   vitest, so `ui/hookOrder.test.ts` reads the source of every component
   instead; a hook after an early return took the whole app down on the first
@@ -246,6 +280,10 @@ quietly wrong.
   inside it, once, through the system picker; the app keeps the grant. The choice
   is kept in `export-settings.json` beside the database, not in it: a restore
   replaces the database, and a folder grant belongs to this install.
+- No text that says what a control already shows. The user has asked twice for
+  explanations to come out: no subtitles, hints, "tap here" lines or empty-state
+  instructions. Labels, one-line errors, the confirmation before anything
+  destructive, and "no records yet" stay.
 - A tapped action answers on the button that was tapped, not in a corner of the
   screen. `ui/ActionButton.tsx` shows a spinner while the work runs and then the
   result in place; what it shows when is `ui/actionState.ts`, which is tested
@@ -293,6 +331,12 @@ quietly wrong.
   carries the rows but not the files: after a restore onto another phone a
   document is listed and will not open. Documents attached before they were
   copied out of the picker's cache may already be gone.
+- Ticket reading has been tried on the two sample pictures with Apple Vision on
+  a Mac, not with ML Kit on the phone, and the flight lookup has never had a real
+  answer from AeroDataBox: `scheduledTime.local` is from memory of its schema.
+  ML Kit here reads Latin script only, so 「12月31日」 may not be read. Which
+  airport fields the answer really carries (`municipalityName`, `countryCode`,
+  `timeZone`, `location`, `greatCircleDistance`) is unconfirmed for the same reason.
 - Every fog change still reloads all tile BLOBs (`loadAllTiles`) and recomputes
   the area; the viewport work only bounds tracing and rendering.
 - Published at https://github.com/waltwait/WorldTrace. `android/`, `docs/`,

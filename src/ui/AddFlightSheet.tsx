@@ -11,25 +11,27 @@ import {
   View,
 } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
-import { File } from 'expo-file-system';
 import * as ImagePicker from 'expo-image-picker';
-import { findAirport } from '../flights/airports';
+import { expoTicketReader } from '../flights/expoTicketReader';
+import { airportLabel, airportTime } from '../flights/flightDisplay';
 import {
   buildFlightFromForm,
+  cleanFlightNumber,
+  editForm,
   EMPTY_FLIGHT_FORM,
-  formFromLeg,
+  formFromTicket,
+  legsFoundMessage,
   type FlightForm,
 } from '../flights/flightForm';
-import {
-  parseItineraryTextOffline,
-  parseTicketWithGemini,
-  type GeminiExtractedLeg,
-} from '../flights/geminiParser';
-import type { FlightRecord } from '../flights/types';
+import { createAeroDataBoxPort } from '../flights/flightStatusApi';
+import { readTicket } from '../flights/readTicket';
+import { extractTickets, type TicketFacts } from '../flights/ticketFacts';
+import type { FlightRecord, LookedUpFlight } from '../flights/types';
+import { normalizeDate } from '../flights/zonedTime';
+import { apiKey } from '../settings/expoKeyStore';
 import { database } from '../store/database';
 import { expoDocFiles } from '../store/expoDocFiles';
-import { attachFlightDoc } from '../store/flightDocs';
-import { insertFlight } from '../store/flights';
+import { saveNewFlight } from '../store/flightDocs';
 import { ActionButton } from './ActionButton';
 import { PressScale } from './PressScale';
 import { radius, theme } from './theme';
@@ -47,17 +49,18 @@ interface AttachedDoc {
   size?: number;
 }
 
-async function fileUriToBase64(uri: string): Promise<string> {
-  const file = new File(uri);
-  const buf = await file.arrayBuffer();
-  const bytes = new Uint8Array(buf);
-  const chunkSize = 0x8000;
-  let binary = '';
-  for (let i = 0; i < bytes.length; i += chunkSize) {
-    const chunk = bytes.subarray(i, i + chunkSize);
-    binary += String.fromCharCode.apply(null, chunk as unknown as number[]);
-  }
-  return btoa(binary);
+/** Everything else about a flight, from its number and date. */
+async function lookUp(
+  ticket: TicketFacts,
+): Promise<{ legs: LookedUpFlight[]; notice: string | null }> {
+  const key = await apiKey('flightStatus');
+  if (!key) return { legs: [], notice: '請先到「我的 › 設定」填航班 API 金鑰' };
+
+  const date = ticket.date && normalizeDate(ticket.date);
+  if (!date) return { legs: [], notice: '請填起飛日期再查詢' };
+
+  const legs = await createAeroDataBoxPort(key).findFlights(ticket.flightNumber, date);
+  return { legs, notice: legs.length === 0 ? '查不到這班航班，請手動填寫' : null };
 }
 
 export const AddFlightSheet = memo(function AddFlightSheet({
@@ -72,21 +75,43 @@ export const AddFlightSheet = memo(function AddFlightSheet({
   // ticket. See flights/flightForm.ts for what the sheet used to make up.
   const [form, setForm] = useState<FlightForm>(EMPTY_FLIGHT_FORM);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  // A ticket can hold several flights and the form shows one: the rest wait
+  // here, and each is filled in after the one before it is saved.
+  const [pendingTickets, setPendingTickets] = useState<TicketFacts[]>([]);
+
+  // Only when a lookup found nothing does the sheet ask for the rest by hand.
+  const [needsTyping, setNeedsTyping] = useState(false);
 
   const setField = useCallback(
     <K extends keyof FlightForm>(key: K) =>
       (value: FlightForm[K]) =>
-        setForm((f) => ({ ...f, [key]: value })),
+        setForm((f) => editForm(f, key, value)),
     [],
   );
 
-  // A parse replaces the whole form, empty fields included, so nothing from
-  // an earlier ticket survives into this one. Only the user's own notes stay.
-  const applyLeg = useCallback((leg: GeminiExtractedLeg) => {
-    setForm((f) => ({ ...formFromLeg(leg), notes: f.notes }));
-  }, []);
+  /**
+   * Fills the form for the first ticket and queues the rest. A new ticket starts
+   * from an empty form, so nothing of the last one survives into it; only the
+   * user's own notes stay. `keepTyped` is the 查詢 button, which works on the form
+   * as it stands.
+   */
+  const showTicket = useCallback(
+    async ([ticket, ...rest]: TicketFacts[], keepTyped = false) => {
+      const { legs, notice } = await lookUp(ticket);
+      setForm((f) =>
+        formFromTicket(ticket, legs, keepTyped ? f : { ...EMPTY_FLIGHT_FORM, notes: f.notes }),
+      );
+      setPendingTickets(rest);
+      setNeedsTyping(legs.length === 0);
+      setEntryMode('manual');
+      setErrorMsg(notice ?? (ticket.yearGuessed ? '票面沒印年份，請確認日期' : null));
+    },
+    [],
+  );
 
   const reset = useCallback(() => {
+    setPendingTickets([]);
+    setNeedsTyping(false);
     setForm(EMPTY_FLIGHT_FORM);
     setAttachedDoc(null);
     setPastedText('');
@@ -94,154 +119,94 @@ export const AddFlightSheet = memo(function AddFlightSheet({
     setEntryMode('manual');
   }, []);
 
-  const handleAiParseText = useCallback(async () => {
+  const readInto = useCallback(
+    async (tickets: TicketFacts[]) => {
+      if (tickets.length === 0) {
+        setErrorMsg('辨識不到航班，請手動填寫');
+        setEntryMode('manual');
+        return { ok: false as const };
+      }
+      await showTicket(tickets);
+      return { ok: true as const, message: legsFoundMessage(tickets) };
+    },
+    [showTicket],
+  );
+
+  const handleReadText = useCallback(async () => {
     setErrorMsg(null);
     if (!pastedText.trim()) {
       setErrorMsg('請先貼上機票或訂位確認文字');
       return { ok: false as const };
     }
-
-    const apiKey = process.env.EXPO_PUBLIC_GEMINI_API_KEY;
-
     try {
-      let legs = apiKey
-        ? await parseTicketWithGemini({ text: pastedText }, apiKey)
-        : parseItineraryTextOffline(pastedText);
-
-      if (!legs || legs.length === 0) {
-        legs = parseItineraryTextOffline(pastedText);
-      }
-
-      if (!legs || legs.length === 0) {
-        setErrorMsg('未能從文字中辨識出航班資訊，請改用手動輸入');
-        return { ok: false as const };
-      }
-
-      const leg = legs[0];
-      applyLeg(leg);
-
-      setEntryMode('manual');
-      return { ok: true as const, message: `已辨識 ${leg.flightNumber}` };
+      return await readInto(extractTickets([pastedText], Date.now()));
     } catch (err) {
-      // Fallback to offline regex
-      const offlineLegs = parseItineraryTextOffline(pastedText);
-      if (offlineLegs.length > 0) {
-        const leg = offlineLegs[0];
-        applyLeg(leg);
-        setEntryMode('manual');
-        return { ok: true as const, message: `已離線辨識 ${leg.flightNumber}` };
-      }
-
       setErrorMsg(err instanceof Error ? err.message : String(err));
       return { ok: false as const };
     }
-  }, [pastedText, applyLeg]);
+  }, [pastedText, readInto]);
 
-  const handlePickDocument = useCallback(async () => {
+  const pickImage = useCallback(async () => {
+    setErrorMsg(null);
+    try {
+      const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'] });
+      if (result.canceled || !result.assets || result.assets.length === 0) {
+        return { ok: false as const };
+      }
+      return await readInto(await readTicket(expoTicketReader, result.assets[0].uri, Date.now()));
+    } catch (err) {
+      setErrorMsg(`辨識失敗：${err instanceof Error ? err.message : String(err)}`);
+      return { ok: false as const };
+    }
+  }, [readInto]);
+
+  const handleLookUp = useCallback(async () => {
+    setErrorMsg(null);
+    const flightNumber = cleanFlightNumber(form.flightNumber);
+    if (!flightNumber) {
+      setErrorMsg('請填寫航班編號');
+      return { ok: false as const };
+    }
+    try {
+      await showTicket(
+        [
+          {
+            flightNumber,
+            date: form.depDate.trim() || null,
+            time: form.depTime.trim() || null,
+            seat: null,
+            yearGuessed: false,
+          },
+        ],
+        true,
+      );
+      return { ok: true as const, message: '已查詢' };
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : String(err));
+      return { ok: false as const };
+    }
+  }, [form.flightNumber, form.depDate, form.depTime, showTicket]);
+
+  const handleAttachDoc = useCallback(async () => {
     setErrorMsg(null);
     try {
       const result = await DocumentPicker.getDocumentAsync({
         type: ['application/pdf', 'image/*'],
         copyToCacheDirectory: true,
       });
-
-      if (result.canceled || !result.assets || result.assets.length === 0) {
-        return { ok: false as const };
-      }
+      if (result.canceled || !result.assets || result.assets.length === 0) return;
 
       const asset = result.assets[0];
-      const docInfo: AttachedDoc = {
+      setAttachedDoc({
         name: asset.name,
         uri: asset.uri,
         mimeType: asset.mimeType ?? 'application/pdf',
         size: asset.size,
-      };
-      setAttachedDoc(docInfo);
-
-      const apiKey = process.env.EXPO_PUBLIC_GEMINI_API_KEY;
-      if (!apiKey) {
-        setErrorMsg('已附加文件。未設定 Gemini API Key，請手動確認航班資訊。');
-        setEntryMode('manual');
-        return { ok: true as const, message: `已附加 ${asset.name}` };
-      }
-
-      const base64Data = await fileUriToBase64(asset.uri);
-      const legs = await parseTicketWithGemini(
-        { base64Data, mimeType: docInfo.mimeType },
-        apiKey,
-      );
-
-      if (legs && legs.length > 0) {
-        const leg = legs[0];
-        applyLeg(leg);
-        setEntryMode('manual');
-        return { ok: true as const, message: `已辨識 ${leg.flightNumber}` };
-      }
-
-      setErrorMsg('未能從文件自動辨識航班，但已附加檔案，請手動確認欄位。');
-      setEntryMode('manual');
-      return { ok: false as const };
-    } catch (err) {
-      setErrorMsg(`文件解析失敗: ${err instanceof Error ? err.message : String(err)}`);
-      return { ok: false as const };
-    }
-  }, [applyLeg]);
-
-  const handlePickImage = useCallback(async () => {
-    setErrorMsg(null);
-    try {
-      const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ['images'],
-        quality: 0.8,
-        base64: true,
       });
-
-      if (result.canceled || !result.assets || result.assets.length === 0) {
-        return { ok: false as const };
-      }
-
-      const asset = result.assets[0];
-      const fileName = asset.fileName ?? `boarding_pass_${Date.now()}.jpg`;
-      const docInfo: AttachedDoc = {
-        name: fileName,
-        uri: asset.uri,
-        mimeType: asset.mimeType ?? 'image/jpeg',
-        size: asset.fileSize,
-      };
-      setAttachedDoc(docInfo);
-
-      const apiKey = process.env.EXPO_PUBLIC_GEMINI_API_KEY;
-      if (!apiKey) {
-        setErrorMsg('已附加照片。未設定 Gemini API Key，請手動確認航班資訊。');
-        setEntryMode('manual');
-        return { ok: true as const, message: `已選取照片` };
-      }
-
-      let base64Data = asset.base64;
-      if (!base64Data) {
-        base64Data = await fileUriToBase64(asset.uri);
-      }
-
-      const legs = await parseTicketWithGemini(
-        { base64Data, mimeType: docInfo.mimeType },
-        apiKey,
-      );
-
-      if (legs && legs.length > 0) {
-        const leg = legs[0];
-        applyLeg(leg);
-        setEntryMode('manual');
-        return { ok: true as const, message: `已辨識 ${leg.flightNumber}` };
-      }
-
-      setErrorMsg('未能從相片辨識航班，但已附加照片，請手動輸入欄位。');
-      setEntryMode('manual');
-      return { ok: false as const };
     } catch (err) {
-      setErrorMsg(`相片辨識失敗: ${err instanceof Error ? err.message : String(err)}`);
-      return { ok: false as const };
+      setErrorMsg(err instanceof Error ? err.message : String(err));
     }
-  }, [applyLeg]);
+  }, []);
 
   const handleSave = useCallback(async () => {
     setErrorMsg(null);
@@ -255,20 +220,27 @@ export const AddFlightSheet = memo(function AddFlightSheet({
 
     try {
       const db = await database();
-      await insertFlight(db, flight);
-
-      if (attachedDoc) {
-        await attachFlightDoc(db, expoDocFiles, {
+      await saveNewFlight(
+        db,
+        expoDocFiles,
+        flight,
+        attachedDoc && {
           id: `doc_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-          flightId: flight.id,
           sourceUri: attachedDoc.uri,
           fileName: attachedDoc.name,
           mimeType: attachedDoc.mimeType,
           now: Date.now(),
-        });
-      }
+        },
+      );
 
       onFlightAdded(flight);
+
+      if (pendingTickets.length > 0) {
+        // The same ticket covers the next leg, so it stays attached.
+        await showTicket(pendingTickets);
+        return { ok: true as const, message: `已加入 ${flight.flightNumber}` };
+      }
+
       // The sheet stays mounted between adds; without this the next flight
       // would get this one's ticket attached and could be saved twice.
       reset();
@@ -278,14 +250,7 @@ export const AddFlightSheet = memo(function AddFlightSheet({
       setErrorMsg(err instanceof Error ? err.message : String(err));
       return { ok: false as const };
     }
-  }, [form, attachedDoc, onFlightAdded, onClose, reset]);
-
-  const unknownAirport = (iata: string) => {
-    const code = iata.trim().toUpperCase();
-    return code.length === 3 && !findAirport(code) ? code : null;
-  };
-  const depUnknown = unknownAirport(form.depIata);
-  const arrUnknown = unknownAirport(form.arrIata);
+  }, [form, attachedDoc, pendingTickets, showTicket, onFlightAdded, onClose, reset]);
 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
@@ -301,7 +266,6 @@ export const AddFlightSheet = memo(function AddFlightSheet({
           <View style={styles.header}>
             <View>
               <Text style={styles.title}>新增航班</Text>
-              <Text style={styles.subtitle}>加入即將出發或歷史飛行記錄</Text>
             </View>
             <PressScale style={styles.closeButton} onPress={onClose} hitSlop={8}>
               <Text style={styles.closeText}>✕</Text>
@@ -324,13 +288,24 @@ export const AddFlightSheet = memo(function AddFlightSheet({
               onPress={() => setEntryMode('ai')}
             >
               <Text style={[styles.modeTabText, entryMode === 'ai' && styles.modeTabTextActive]}>
-                ✨ 智慧機票辨識
+                ✨ 機票辨識
               </Text>
             </PressScale>
           </View>
 
           <ScrollView style={styles.scroll} contentContainerStyle={styles.formContent}>
             {errorMsg ? <Text style={styles.errorBanner}>{errorMsg}</Text> : null}
+
+            {pendingTickets.length > 0 ? (
+              <View style={styles.legQueue}>
+                <Text style={styles.legQueueText}>
+                  還有 {pendingTickets.length} 段航班，這段儲存後接著填入
+                </Text>
+                <PressScale onPress={() => void showTicket(pendingTickets)} hitSlop={8}>
+                  <Text style={styles.attachedDocRemove}>略過這段</Text>
+                </PressScale>
+              </View>
+            ) : null}
 
             {attachedDoc ? (
               <View style={styles.attachedDocCard}>
@@ -342,9 +317,6 @@ export const AddFlightSheet = memo(function AddFlightSheet({
                     <Text style={styles.attachedDocName} numberOfLines={1}>
                       {attachedDoc.name}
                     </Text>
-                    <Text style={styles.attachedDocStatus}>
-                      已附加至航班（儲存時自動關聯）
-                    </Text>
                   </View>
                 </View>
                 <PressScale onPress={() => setAttachedDoc(null)} hitSlop={8}>
@@ -355,47 +327,33 @@ export const AddFlightSheet = memo(function AddFlightSheet({
 
             {entryMode === 'ai' ? (
               <View style={styles.aiBox}>
-                <Text style={styles.label}>方式 1：選取電子機票檔案或登機證相片</Text>
-                <View style={styles.fileButtonsRow}>
-                  <View style={styles.flex1}>
-                    <ActionButton
-                      variant="secondary"
-                      label="📄 選取 PDF 機票"
-                      busyLabel="讀取中…"
-                      onPress={handlePickDocument}
-                    />
-                  </View>
-                  <View style={styles.flex1}>
-                    <ActionButton
-                      variant="secondary"
-                      label="🖼️ 相簿登機證"
-                      busyLabel="讀取中…"
-                      onPress={handlePickImage}
-                    />
-                  </View>
-                </View>
+                <ActionButton
+                  variant="secondary"
+                  label="🖼️ 選擇截圖或照片"
+                  busyLabel="辨識中…"
+                  onPress={pickImage}
+                />
 
                 <View style={styles.dividerRow}>
                   <View style={styles.dividerLine} />
-                  <Text style={styles.dividerText}>或直接貼上文字</Text>
+                  <Text style={styles.dividerText}>或貼上文字</Text>
                   <View style={styles.dividerLine} />
                 </View>
 
-                <Text style={styles.label}>方式 2：貼上機票或訂位確認文字</Text>
                 <TextInput
                   style={[styles.input, styles.aiInput]}
                   value={pastedText}
                   onChangeText={setPastedText}
-                  placeholder="例如：長榮航空 BR198 台北 (TPE) 到 東京 (NRT) 2026-12-31 座位 10K PNR 8YK2MP..."
+                  placeholder="機票或訂位確認文字"
                   placeholderTextColor={theme.textFaint}
                   multiline
                   numberOfLines={4}
                 />
                 <ActionButton
                   variant="primary"
-                  label="✨ 自動辨識文字並填入"
+                  label="✨ 辨識"
                   busyLabel="解析中…"
-                  onPress={handleAiParseText}
+                  onPress={handleReadText}
                 />
               </View>
             ) : (
@@ -413,79 +371,6 @@ export const AddFlightSheet = memo(function AddFlightSheet({
                     />
                   </View>
                   <View style={styles.flex1}>
-                    <Text style={styles.label}>航空公司</Text>
-                    <TextInput
-                      style={styles.input}
-                      value={form.airlineName}
-                      onChangeText={setField('airlineName')}
-                      placeholder="如 中華航空"
-                      placeholderTextColor={theme.textFaint}
-                    />
-                  </View>
-                </View>
-
-                <View style={styles.fieldRow}>
-                  <View style={styles.flex1}>
-                    <Text style={styles.label}>起飛機場 (IATA)</Text>
-                    <TextInput
-                      style={styles.input}
-                      value={form.depIata}
-                      onChangeText={setField('depIata')}
-                      placeholder="TPE"
-                      placeholderTextColor={theme.textFaint}
-                      autoCapitalize="characters"
-                      maxLength={3}
-                    />
-                  </View>
-                  <View style={styles.flex1}>
-                    <Text style={styles.label}>抵達機場 (IATA)</Text>
-                    <TextInput
-                      style={styles.input}
-                      value={form.arrIata}
-                      onChangeText={setField('arrIata')}
-                      placeholder="PVG"
-                      placeholderTextColor={theme.textFaint}
-                      autoCapitalize="characters"
-                      maxLength={3}
-                    />
-                  </View>
-                </View>
-
-                {depUnknown || arrUnknown ? (
-                  <View style={styles.fieldRow}>
-                    {depUnknown ? (
-                      <View style={styles.flex1}>
-                        <Text style={styles.label}>{depUnknown} 當地時區 (UTC±)</Text>
-                        <TextInput
-                          style={styles.input}
-                          value={form.depUtcOffset}
-                          onChangeText={setField('depUtcOffset')}
-                          placeholder="如 +9"
-                          placeholderTextColor={theme.textFaint}
-                        />
-                      </View>
-                    ) : (
-                      <View style={styles.flex1} />
-                    )}
-                    {arrUnknown ? (
-                      <View style={styles.flex1}>
-                        <Text style={styles.label}>{arrUnknown} 當地時區 (UTC±)</Text>
-                        <TextInput
-                          style={styles.input}
-                          value={form.arrUtcOffset}
-                          onChangeText={setField('arrUtcOffset')}
-                          placeholder="如 -5"
-                          placeholderTextColor={theme.textFaint}
-                        />
-                      </View>
-                    ) : (
-                      <View style={styles.flex1} />
-                    )}
-                  </View>
-                ) : null}
-
-                <View style={styles.fieldRow}>
-                  <View style={styles.flex1}>
                     <Text style={styles.label}>起飛日期（當地）</Text>
                     <TextInput
                       style={styles.input}
@@ -495,40 +380,132 @@ export const AddFlightSheet = memo(function AddFlightSheet({
                       placeholderTextColor={theme.textFaint}
                     />
                   </View>
-                  <View style={styles.flex1}>
-                    <Text style={styles.label}>起飛時間（當地）</Text>
-                    <TextInput
-                      style={styles.input}
-                      value={form.depTime}
-                      onChangeText={setField('depTime')}
-                      placeholder="07:30"
-                      placeholderTextColor={theme.textFaint}
-                    />
-                  </View>
                 </View>
 
-                <View style={styles.fieldRow}>
-                  <View style={styles.flex1}>
-                    <Text style={styles.label}>抵達日期（當地）</Text>
-                    <TextInput
-                      style={styles.input}
-                      value={form.arrDate}
-                      onChangeText={setField('arrDate')}
-                      placeholder={form.depDate || '同起飛日'}
-                      placeholderTextColor={theme.textFaint}
-                    />
+                <ActionButton
+                  variant="primary"
+                  label="🔎 查詢"
+                  busyLabel="查詢中…"
+                  disabled={form.flightNumber.trim() === '' || form.depDate.trim() === ''}
+                  onPress={handleLookUp}
+                />
+
+                {form.lookedUp ? (
+                  <View style={styles.lookedUp}>
+                    <Text style={styles.lookedUpRoute}>
+                      {airportLabel(form.lookedUp.depCity, form.lookedUp.depIata)} →{' '}
+                      {airportLabel(form.lookedUp.arrCity, form.lookedUp.arrIata)}
+                    </Text>
+                    <Text style={styles.lookedUpDetail}>
+                      {form.lookedUp.airlineName} ·{' '}
+                      {airportTime(form.lookedUp.depScheduledUtc, form.lookedUp.depTz)} –{' '}
+                      {airportTime(form.lookedUp.arrScheduledUtc, form.lookedUp.arrTz)}
+                    </Text>
                   </View>
-                  <View style={styles.flex1}>
-                    <Text style={styles.label}>抵達時間（當地）</Text>
-                    <TextInput
-                      style={styles.input}
-                      value={form.arrTime}
-                      onChangeText={setField('arrTime')}
-                      placeholder="11:45"
-                      placeholderTextColor={theme.textFaint}
-                    />
+                ) : null}
+
+                {needsTyping && !form.lookedUp ? (
+                  <>
+                  <View style={styles.fieldRow}>
+                    <View style={styles.flex1}>
+                      <Text style={styles.label}>航空公司</Text>
+                      <TextInput
+                        style={styles.input}
+                        value={form.airlineName}
+                        onChangeText={setField('airlineName')}
+                        placeholder="如 中華航空"
+                        placeholderTextColor={theme.textFaint}
+                      />
+                    </View>
                   </View>
-                </View>
+
+                  <View style={styles.fieldRow}>
+                    <View style={styles.flex1}>
+                      <Text style={styles.label}>起飛機場</Text>
+                      <TextInput
+                        style={styles.input}
+                        value={form.depIata}
+                        onChangeText={setField('depIata')}
+                        placeholder="TPE"
+                        placeholderTextColor={theme.textFaint}
+                        autoCapitalize="characters"
+                        maxLength={3}
+                      />
+                    </View>
+                    <View style={styles.flex1}>
+                      <Text style={styles.label}>抵達機場</Text>
+                      <TextInput
+                        style={styles.input}
+                        value={form.arrIata}
+                        onChangeText={setField('arrIata')}
+                        placeholder="PVG"
+                        placeholderTextColor={theme.textFaint}
+                        autoCapitalize="characters"
+                        maxLength={3}
+                      />
+                    </View>
+                  </View>
+
+                  <View style={styles.fieldRow}>
+                    <View style={styles.flex1}>
+                      <Text style={styles.label}>起飛地 UTC 偏移</Text>
+                      <TextInput
+                        style={styles.input}
+                        value={form.depUtcOffset}
+                        onChangeText={setField('depUtcOffset')}
+                        placeholder="+8"
+                        placeholderTextColor={theme.textFaint}
+                      />
+                    </View>
+                    <View style={styles.flex1}>
+                      <Text style={styles.label}>抵達地 UTC 偏移</Text>
+                      <TextInput
+                        style={styles.input}
+                        value={form.arrUtcOffset}
+                        onChangeText={setField('arrUtcOffset')}
+                        placeholder="+9"
+                        placeholderTextColor={theme.textFaint}
+                      />
+                    </View>
+                  </View>
+
+                  <View style={styles.fieldRow}>
+                    <View style={styles.flex1}>
+                      <Text style={styles.label}>起飛時間（當地）</Text>
+                      <TextInput
+                        style={styles.input}
+                        value={form.depTime}
+                        onChangeText={setField('depTime')}
+                        placeholder="07:30"
+                        placeholderTextColor={theme.textFaint}
+                      />
+                    </View>
+                    <View style={styles.flex1}>
+                      <Text style={styles.label}>抵達時間（當地）</Text>
+                      <TextInput
+                        style={styles.input}
+                        value={form.arrTime}
+                        onChangeText={setField('arrTime')}
+                        placeholder="11:45"
+                        placeholderTextColor={theme.textFaint}
+                      />
+                    </View>
+                  </View>
+
+                  <View style={styles.fieldRow}>
+                    <View style={styles.flex1}>
+                      <Text style={styles.label}>抵達日期（當地）</Text>
+                      <TextInput
+                        style={styles.input}
+                        value={form.arrDate}
+                        onChangeText={setField('arrDate')}
+                        placeholder={form.depDate || '同起飛日'}
+                        placeholderTextColor={theme.textFaint}
+                      />
+                    </View>
+                  </View>
+                  </>
+                ) : null}
 
                 <View style={styles.fieldRow}>
                   <View style={styles.flex1}>
@@ -542,27 +519,14 @@ export const AddFlightSheet = memo(function AddFlightSheet({
                       autoCapitalize="characters"
                     />
                   </View>
-                  <View style={styles.flex1}>
-                    <Text style={styles.label}>訂位代號 (PNR)</Text>
-                    <TextInput
-                      style={styles.input}
-                      value={form.pnr}
-                      onChangeText={setField('pnr')}
-                      placeholder="如 7X9K2M"
-                      placeholderTextColor={theme.textFaint}
-                      autoCapitalize="characters"
-                    />
-                  </View>
                 </View>
 
                 <View style={styles.fieldGroup}>
-                  <Text style={styles.label}>備註 (Notes)</Text>
+                  <Text style={styles.label}>備註</Text>
                   <TextInput
                     style={[styles.input, styles.textArea]}
                     value={form.notes}
                     onChangeText={setField('notes')}
-                    placeholder="選位、特別餐或旅行備忘錄..."
-                    placeholderTextColor={theme.textFaint}
                     multiline
                     numberOfLines={3}
                   />
@@ -570,8 +534,8 @@ export const AddFlightSheet = memo(function AddFlightSheet({
 
                 {!attachedDoc ? (
                   <View style={styles.attachQuickRow}>
-                    <PressScale style={styles.attachBtn} onPress={handlePickDocument}>
-                      <Text style={styles.attachBtnText}>📎 附加電子機票 (PDF / 圖檔)</Text>
+                    <PressScale style={styles.attachBtn} onPress={handleAttachDoc}>
+                      <Text style={styles.attachBtnText}>📎 附加機票</Text>
                     </PressScale>
                   </View>
                 ) : null}
@@ -594,6 +558,26 @@ export const AddFlightSheet = memo(function AddFlightSheet({
 });
 
 const styles = StyleSheet.create({
+  lookedUp: {
+    gap: 4,
+    padding: 12,
+    borderRadius: radius.card,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.border,
+  },
+  lookedUpRoute: { color: theme.text, fontSize: 15, fontWeight: '600' },
+  lookedUpDetail: { color: theme.textMuted, fontSize: 13 },
+  legQueue: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    padding: 12,
+    borderRadius: radius.card,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.border,
+  },
+  legQueueText: { color: theme.textMuted, fontSize: 13, flexShrink: 1 },
   scrim: {
     flex: 1,
     backgroundColor: 'rgba(0, 0, 0, 0.75)',
@@ -659,10 +643,6 @@ const styles = StyleSheet.create({
     gap: 12,
     paddingVertical: 6,
   },
-  fileButtonsRow: {
-    flexDirection: 'row',
-    gap: 10,
-  },
   dividerRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -713,11 +693,6 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
   },
-  attachedDocStatus: {
-    color: theme.accent,
-    fontSize: 10,
-    fontWeight: '600',
-  },
   attachedDocRemove: {
     color: theme.danger,
     fontSize: 12,
@@ -740,11 +715,6 @@ const styles = StyleSheet.create({
     color: theme.text,
     fontSize: 18,
     fontWeight: '800',
-  },
-  subtitle: {
-    color: theme.textFaint,
-    fontSize: 12,
-    marginTop: 2,
   },
   closeButton: {
     width: 32,

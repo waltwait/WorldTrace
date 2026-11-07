@@ -10,41 +10,84 @@ export type FlightStatus =
   | 'DELAYED'
   | 'CANCELLED';
 
-export type CabinClass = 'Economy' | 'Premium Economy' | 'Business' | 'First';
-
-export type Alliance = 'SkyTeam' | 'Star Alliance' | 'oneworld';
-
+/**
+ * A flight as the app uses it. It is stored by where each thing came from, in
+ * three tables joined back together here (store/flights.ts).
+ */
 export interface FlightRecord {
+  // flights: what the user confirmed.
   id: string;
   flightNumber: string; // e.g. "CI501"
+  depDate: string; // YYYY-MM-DD on the departure airport's clocks
+  depTime?: string | null; // HH:MM, likewise
+  seat?: string | null;
+  notes?: string | null;
+  isFinished: boolean;
+  createdAt: number;
+
+  // flight_schedule: the timetable, which does not change.
+  scheduleSource: ScheduleSource;
   airlineCode: string; // e.g. "CI"
   airlineName: string; // e.g. "China Airlines"
-  alliance?: Alliance | null;
   depIata: string; // e.g. "TPE"
   arrIata: string; // e.g. "PVG"
   depScheduledUtc: number; // Unix timestamp ms
-  depEstimatedUtc?: number | null;
   arrScheduledUtc: number; // Unix timestamp ms
-  arrEstimatedUtc?: number | null;
   depTz: string; // IANA timezone e.g. "Asia/Taipei"
   arrTz: string; // IANA timezone e.g. "Asia/Shanghai"
   depTerminal?: string | null;
   arrTerminal?: string | null;
+  depCity?: string | null;
+  arrCity?: string | null;
+  depCountry?: string | null; // ISO 2-letter, e.g. "TW"
+  arrCountry?: string | null;
+  depLat?: number | null;
+  depLon?: number | null;
+  arrLat?: number | null;
+  arrLon?: number | null;
+  distanceKm?: number | null;
+  durationMinutes: number;
+
+  // flight_status: what changes up to the day it flies.
+  status: FlightStatus;
+  depEstimatedUtc?: number | null;
+  arrEstimatedUtc?: number | null;
   depGate?: string | null;
   arrGate?: string | null;
   baggageBelt?: string | null;
-  status: FlightStatus;
-  distanceMiles: number;
-  durationMinutes: number;
-  seat?: string | null;
-  cabinClass?: CabinClass | null;
-  pnr?: string | null;
-  notes?: string | null;
-  notificationsEnabled: boolean;
-  isFinished: boolean;
   lastSyncedAt?: number | null;
-  createdAt: number;
 }
+
+/** 'api' for a timetable looked up; 'user' for one typed in when none could be. */
+export type ScheduleSource = 'api' | 'user';
+
+/** One flight as the status API describes it. */
+export type LookedUpFlight = Pick<
+  FlightRecord,
+  | 'flightNumber'
+  | 'airlineCode'
+  | 'airlineName'
+  | 'depIata'
+  | 'arrIata'
+  | 'depScheduledUtc'
+  | 'arrScheduledUtc'
+  | 'depTz'
+  | 'arrTz'
+  | 'depTerminal'
+  | 'arrTerminal'
+  | 'depCity'
+  | 'arrCity'
+  | 'depCountry'
+  | 'arrCountry'
+  | 'depLat'
+  | 'depLon'
+  | 'arrLat'
+  | 'arrLon'
+  | 'distanceKm'
+  | 'depGate'
+  | 'arrGate'
+  | 'status'
+>;
 
 export interface FlightDocRecord {
   id: string;
@@ -55,33 +98,10 @@ export interface FlightDocRecord {
   createdAt: number;
 }
 
-export interface AirportInfo {
-  iata: string;
-  icao?: string;
-  name: string;
-  nameZh: string;
-  city: string;
-  cityZh: string;
-  country: string;
-  countryCode: string; // ISO 2-letter, e.g. "TW"
-  flagEmoji: string; // e.g. "🇹🇼"
-  lat: number;
-  lon: number;
-  tz: string; // IANA timezone
-}
-
-export interface TimezoneSummary {
-  hasDifference: boolean;
-  hourDifference: number; // arrTz offset - depTz offset in hours
-  headline: string;
-  description: string;
-  badge: string; // e.g. "UTC+8" or "+1 hr"
-}
-
 export interface PassportStats {
   totalFlights: number;
   totalHours: number;
-  totalMiles: number;
+  totalKm: number;
   visitedCountriesCount: number;
   visitedCountryCodes: string[];
   topAirportIata: string | null;

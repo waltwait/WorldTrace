@@ -121,7 +121,7 @@ export const BackupScreen = memo(function BackupScreen({
         createFolderPort(() =>
           ask({
             title: '選擇存放位置',
-            message: '選「下載」裡的資料夾，可以按「新增資料夾」建立一個，例如 WorldTrace。之後都會存到那裡。',
+            message: '選「下載」裡的一個資料夾，之後都存到那裡。',
             confirmLabel: '選擇資料夾',
             cancelLabel: '取消',
           }),
@@ -346,7 +346,7 @@ function CloudPanel({
         {status.remote
           ? `雲端備份 ${formatBytes(status.remote.bytes)} · ${formatWhen(status.remote.modifiedAt)}`
           : status.lastBackupAt
-            ? '雲端上找不到備份檔（可能已被刪除）'
+            ? '雲端上找不到備份檔'
             : '尚未備份過'}
       </Text>
 

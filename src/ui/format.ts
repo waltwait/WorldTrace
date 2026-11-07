@@ -33,6 +33,10 @@ export function formatArea(squareMeters: number): string {
  * walk. Two decimals keep a short outing visible — 46 m still reads as
  * 0.05 km rather than rounding away to nothing.
  */
+export function formatFlightDistance(km: number | null | undefined): string {
+  return km == null ? '—' : formatDistance(km * METERS_PER_KM);
+}
+
 export function formatDistance(meters: number): string {
   const km = meters / METERS_PER_KM;
 
