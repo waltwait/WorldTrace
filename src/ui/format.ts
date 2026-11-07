@@ -37,9 +37,9 @@ export function formatFlightDistance(km: number | null | undefined): string {
   return km == null ? '—' : formatDistance(km * METERS_PER_KM);
 }
 
-/** Times round the Earth, once there is enough of a lap to be worth saying. */
-export function formatLaps(laps: number): string | null {
-  return laps < 0.1 ? null : `繞地球 ${laps.toFixed(1)} 圈`;
+/** A total of flying. It is rounded already, so it claims no decimals. */
+export function formatWholeKm(km: number | null | undefined): string {
+  return km == null ? '—' : `${Math.round(km).toLocaleString('en-US')} km`;
 }
 
 export function formatDistance(meters: number): string {

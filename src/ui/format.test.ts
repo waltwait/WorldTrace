@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import { formatArea, formatDistance, formatByUnit, rejectionLabel,
   formatFlightDistance,
-  formatLaps,
+  formatWholeKm,
 } from './format';
 
 describe('formatByUnit', () => {
@@ -108,13 +108,21 @@ describe('formatFlightDistance', () => {
   });
 });
 
-describe('formatLaps', () => {
-  test('says how many times round the Earth', () => {
-    expect(formatLaps(1.26)).toBe('繞地球 1.3 圈');
+
+// A total is rounded already: 「807.00 km」 claims a precision it does not have, and
+// sat beside a ticket saying 806.73.
+describe('formatWholeKm', () => {
+  test('writes whole kilometres, with thousands marked', () => {
+    expect(formatWholeKm(5516)).toBe('5,516 km');
+    expect(formatWholeKm(806.73)).toBe('807 km');
+    expect(formatWholeKm(1234567)).toBe('1,234,567 km');
   });
 
-  // 「繞地球 0.0 圈」 says nothing a reader wants to hear.
-  test('says nothing until there is a tenth of a lap to report', () => {
-    expect(formatLaps(0.04)).toBeNull();
+  test('writes nothing flown as zero', () => {
+    expect(formatWholeKm(0)).toBe('0 km');
+  });
+
+  test('shows a dash for a distance nobody knows', () => {
+    expect(formatWholeKm(null)).toBe('—');
   });
 });

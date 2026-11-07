@@ -4,7 +4,16 @@
  */
 
 import { memo, useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import {
+  ActivityIndicator,
+  Animated,
+  Easing,
+  Modal,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  View,
+} from 'react-native';
 import {
   backUpNow,
   connect,
@@ -13,6 +22,9 @@ import {
   restoreFromCloud,
   type CloudStatus,
 } from '../cloud/cloudBackup';
+import { countryName, flagEmoji } from '../flights/countries';
+import { knownCountries } from '../flights/flightStats';
+import type { FlightRecord } from '../flights/types';
 import { discardExport, exportGpx, exportSnapshot, share, type ExportResult } from '../export/backup';
 import { folderLabel, type ExportMode, type ExportSettings, DEFAULT_EXPORT_SETTINGS } from '../export/exportSettings';
 import { createFolderPort } from '../export/folderPort';
@@ -26,16 +38,24 @@ import { buildSummary } from '../store/summary';
 import { ActionButton } from './ActionButton';
 import type { ActionResult } from './actionState';
 import { ask } from './dialog';
+import { FadeIn } from './FadeIn';
 import { formatArea } from './format';
+import { useHomeCountry } from './HomeCountry';
 import { Icon } from './Icon';
+import { CURVE, DURATION, pillOffset } from './motion';
 import { PressScale } from './PressScale';
 import { useStyles, useTheme, useThemeChooser } from './ThemeProvider';
 import { radius, THEMES, THEME_IDS, TOOLBAR_CLEARANCE, type Theme } from './themes';
+import { useReducedMotion } from './useReducedMotion';
 import { Text, TextInput } from './Text';
 
 type Busy = 'gpx' | 'snapshot' | 'connect' | 'upload' | 'restore' | 'rebuild' | null;
 
-export const SettingsScreen = memo(function SettingsScreen() {
+export const SettingsScreen = memo(function SettingsScreen({
+  flights,
+}: {
+  flights: FlightRecord[];
+}) {
   const styles = useStyles(make);
   const [busy, setBusy] = useState<Busy>(null);
   const [cloud, setCloud] = useState<CloudStatus | null>(null);
@@ -153,7 +173,7 @@ export const SettingsScreen = memo(function SettingsScreen() {
     >
       <Text style={styles.title}>設定</Text>
 
-      <ThemeAndKeys />
+      <ThemeAndKeys flights={flights} />
 
       <Text style={styles.heading}>雲端備份</Text>
       <CloudGroup
@@ -235,7 +255,7 @@ export const SettingsScreen = memo(function SettingsScreen() {
   );
 });
 
-function ThemeAndKeys() {
+function ThemeAndKeys({ flights }: { flights: FlightRecord[] }) {
   const styles = useStyles(make);
   const t = useTheme();
   const choose = useThemeChooser();
@@ -263,6 +283,8 @@ function ThemeAndKeys() {
         </PressScale>
       </View>
 
+      <HomeCountryRow flights={flights} />
+
       {API_KEYS.map(({ name, label }) => (
         <KeyRow key={name} name={name} label={label} />
       ))}
@@ -279,7 +301,7 @@ function ThemeAndKeys() {
         onRequestClose={close}
       >
         <Pressable style={StyleSheet.absoluteFill} onPress={close} accessibilityLabel="關閉" />
-        <View style={[styles.menu, { top: menuTop ?? 0 }]}>
+        <FadeIn key={menuTop ?? 0} pop offset={-6} style={[styles.menu, { top: menuTop ?? 0 }]}>
           {THEME_IDS.map((id) => {
             const option = THEMES[id];
             return (
@@ -297,9 +319,81 @@ function ThemeAndKeys() {
               </PressScale>
             );
           })}
-        </View>
+        </FadeIn>
       </Modal>
     </View>
+  );
+}
+
+/** Only countries already flown to or from: the rest would change nothing. */
+function HomeCountryRow({ flights }: { flights: FlightRecord[] }) {
+  const styles = useStyles(make);
+  const t = useTheme();
+  const { home, choose } = useHomeCountry();
+  const [menuTop, setMenuTop] = useState<number | null>(null);
+  const row = useRef<View>(null);
+
+  const known = knownCountries(flights);
+  const choices = home && !known.includes(home) ? [home, ...known] : known;
+  const close = () => setMenuTop(null);
+
+  const option = (code: string | null) => (
+    <PressScale
+      key={code ?? 'none'}
+      style={[styles.menuRow, code === home && styles.menuRowOn]}
+      onPress={() => {
+        choose(code);
+        close();
+      }}
+    >
+      <Text style={styles.menuText}>
+        {code ? `${flagEmoji(code)} ${countryName(code)}` : '未設定'}
+      </Text>
+      {code === home ? <Icon name="check" color={t.ink} size={20} weight={2.6} /> : null}
+    </PressScale>
+  );
+
+  return (
+    <>
+      <View style={styles.line} />
+      <View ref={row} collapsable={false}>
+        <PressScale
+          style={styles.row}
+          onPress={() =>
+            row.current?.measureInWindow((_x, y, _width, height) => setMenuTop(y + height))
+          }
+        >
+          <Text style={styles.rowText}>出發國家</Text>
+          <View style={styles.rowEnd}>
+            {home ? (
+              <Text style={styles.rowValue}>
+                {flagEmoji(home)} {countryName(home)}
+              </Text>
+            ) : (
+              <Text style={styles.rowMuted}>未設定</Text>
+            )}
+            <Icon name="chevronDown" color={t.ink} size={20} />
+          </View>
+        </PressScale>
+      </View>
+
+      <Modal
+        visible={menuTop !== null}
+        transparent
+        animationType="fade"
+        statusBarTranslucent
+        navigationBarTranslucent
+        onRequestClose={close}
+      >
+        <Pressable style={StyleSheet.absoluteFill} onPress={close} accessibilityLabel="關閉" />
+        <FadeIn key={menuTop ?? 0} pop offset={-6} style={[styles.menu, { top: menuTop ?? 0 }]}>
+          <ScrollView style={styles.menuList}>
+            {option(null)}
+            {choices.map(option)}
+          </ScrollView>
+        </FadeIn>
+      </Modal>
+    </>
   );
 }
 
@@ -380,7 +474,7 @@ function KeyRow({ name, label }: { name: ApiKeyName; label: string }) {
         </View>
       </PressScale>
       {editing ? (
-        <View style={styles.keyEditor}>
+        <FadeIn offset={-6} style={styles.keyEditor}>
           <TextInput
             style={styles.keyInput}
             value={text}
@@ -403,7 +497,7 @@ function KeyRow({ name, label }: { name: ApiKeyName; label: string }) {
               <Text style={styles.clear}>清除金鑰</Text>
             </PressScale>
           ) : null}
-        </View>
+        </FadeIn>
       ) : null}
     </>
   );
@@ -501,21 +595,49 @@ function CloudGroup({
   );
 }
 
+const MODE_SLOT_WIDTH = 76;
+const MODE_CHOICES: ReadonlyArray<{ mode: ExportMode; label: string }> = [
+  { mode: 'share', label: '分享' },
+  { mode: 'save', label: '存到手機' },
+];
+
 function ModeSwitch({ mode, onChange }: { mode: ExportMode; onChange: (mode: ExportMode) => void }) {
   const styles = useStyles(make);
-  const choices: Array<{ mode: ExportMode; label: string }> = [
-    { mode: 'share', label: '分享' },
-    { mode: 'save', label: '存到手機' },
-  ];
+  const reduced = useReducedMotion();
+  const modeIndex = MODE_CHOICES.findIndex((c) => c.mode === mode);
+  const indicatorX = useRef(
+    new Animated.Value(pillOffset(modeIndex, MODE_SLOT_WIDTH, 0)),
+  ).current;
+
+  useEffect(() => {
+    const target = pillOffset(modeIndex, MODE_SLOT_WIDTH, 0);
+    if (reduced) {
+      indicatorX.setValue(target);
+      return;
+    }
+
+    const animation = Animated.timing(indicatorX, {
+      toValue: target,
+      duration: DURATION.enter,
+      easing: Easing.bezier(...CURVE.move),
+      useNativeDriver: true,
+    });
+    animation.start();
+    return () => animation.stop();
+  }, [indicatorX, modeIndex, reduced]);
 
   return (
     <View style={styles.row}>
       <Text style={styles.rowText}>匯出到</Text>
       <View style={styles.modes}>
-        {choices.map((choice) => (
+        <Animated.View
+          pointerEvents="none"
+          style={[styles.modeIndicator, { transform: [{ translateX: indicatorX }] }]}
+        />
+        {MODE_CHOICES.map((choice) => (
           <PressScale
             key={choice.mode}
-            style={[styles.mode, mode === choice.mode && styles.modeOn]}
+            style={styles.mode}
             onPress={() => onChange(choice.mode)}
           >
             <Text style={[styles.modeText, mode === choice.mode && styles.modeTextOn]}>
@@ -571,6 +693,7 @@ const make = (t: Theme) =>
       backgroundColor: '#FFFFFF',
       elevation: 8,
     },
+    menuList: { maxHeight: 320 },
     menuRow: {
       height: 48,
       paddingHorizontal: 12,
@@ -600,8 +723,22 @@ const make = (t: Theme) =>
     cloudAccount: { paddingHorizontal: 16, paddingVertical: 12, gap: 2 },
 
     modes: { flexDirection: 'row', padding: 3, borderRadius: 16, backgroundColor: t.ground },
-    mode: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 13 },
-    modeOn: { backgroundColor: t.ink },
+    modeIndicator: {
+      position: 'absolute',
+      left: 3,
+      top: 3,
+      width: MODE_SLOT_WIDTH,
+      height: 30,
+      borderRadius: 13,
+      backgroundColor: t.ink,
+    },
+    mode: {
+      width: MODE_SLOT_WIDTH,
+      height: 30,
+      borderRadius: 13,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
     modeText: { color: t.ink, fontSize: 13 },
     modeTextOn: { color: '#FFFFFF', fontWeight: '700' },
   });

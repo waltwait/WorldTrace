@@ -1,11 +1,15 @@
-/** The flying so far, in one line, and the way into the passport. */
+/** The flying so far, in one line under the flags of where it went, and the way into the passport. */
 
 import { StyleSheet, View } from 'react-native';
-import { computePassportStats } from '../flights/flightStats';
+import { flagEmoji } from '../flights/countries';
+import { computePassportStats, countryStamps } from '../flights/flightStats';
 import type { FlightRecord } from '../flights/types';
-import { formatFlightDistance } from './format';
+import { formatWholeKm } from './format';
+import { useHomeCountry } from './HomeCountry';
+import { flagRow } from './flagRow';
 import { Icon } from './Icon';
 import { PressScale } from './PressScale';
+import { SwapText } from './SwapText';
 import { useStyles, useTheme } from './ThemeProvider';
 import { FONT, radius, type Theme } from './themes';
 import { Text } from './Text';
@@ -19,19 +23,32 @@ export function PassportCard({
 }) {
   const styles = useStyles(make);
   const t = useTheme();
-  const passport = computePassportStats(flights);
+  const { home } = useHomeCountry();
+  const passport = computePassportStats(flights, home);
+  // In the stamps' order, as on the passport. Seven fit beside the name on a narrow phone.
+  const flags = flagRow(
+    countryStamps(flights, home).map((stamp) => stamp.code),
+    7,
+  );
 
   return (
     <PressScale style={styles.card} onPress={onOpen}>
       <View style={styles.head}>
         <Text style={styles.name}>飛行護照</Text>
+        <View style={styles.flags}>
+          {flags.codes.map((code) => (
+            <Text key={code} style={styles.flag}>
+              {flagEmoji(code)}
+            </Text>
+          ))}
+          {flags.more > 0 ? <Text style={styles.more}>+{flags.more}</Text> : null}
+        </View>
         <Icon name="chevronRight" color={t.muted} size={18} />
       </View>
       <View style={styles.facts}>
         <Fact label="航班" value={`${passport.totalFlights}`} />
         <Fact label="小時" value={`${passport.totalHours}`} />
-        <Fact label="距離" value={formatFlightDistance(passport.totalKm)} wide />
-        <Fact label="國家" value={`${passport.visitedCountriesCount}`} />
+        <Fact label="距離" value={formatWholeKm(passport.totalKm)} wide />
       </View>
     </PressScale>
   );
@@ -47,9 +64,13 @@ function Fact({ label, value, wide = false }: { label: string; value: string; wi
   return (
     <View style={wide ? styles.factWide : styles.fact}>
       <View style={styles.valueLine}>
-        <Text style={styles.value} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.6}>
-          {value}
-        </Text>
+        <SwapText
+          text={value}
+          style={styles.value}
+          numberOfLines={1}
+          adjustsFontSizeToFit
+          minimumFontScale={0.6}
+        />
       </View>
       <Text style={styles.label}>{label}</Text>
     </View>
@@ -65,7 +86,10 @@ const make = (t: Theme) =>
       backgroundColor: t.soft,
       gap: 4,
     },
-    head: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+    head: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+    flags: { flex: 1, flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'center', gap: 4 },
+    flag: { fontSize: 16 },
+    more: { color: t.muted, fontFamily: FONT.bold, fontSize: 12 },
     name: { color: t.ink, fontSize: 14, fontWeight: '700' },
     facts: { flexDirection: 'row', gap: 10 },
     fact: { flex: 1, minWidth: 0 },

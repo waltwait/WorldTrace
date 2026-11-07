@@ -15,7 +15,121 @@ function flown(flights: readonly FlightRecord[]): FlightRecord[] {
   return flights.filter((f) => f.isFinished && f.status !== 'CANCELLED');
 }
 
-export function computePassportStats(flights: FlightRecord[]): PassportStats {
+/**
+ * Without a home country, a stay longer than this and the next flight starts another
+ * trip. With one, a trip lasts until it comes home, however long that takes.
+ */
+const LONGEST_STAY_MS = 30 * 24 * 3600 * 1000;
+/** A stop this short or shorter, on the way somewhere else, is a connection. */
+const LONGEST_CONNECTION_MS = 24 * 3600 * 1000;
+
+const hasCountry = (code: string | null | undefined): code is string => !!code;
+
+/** Whether this flight has brought the trip back to where it began. */
+function isBackHome(
+  trip: readonly FlightRecord[],
+  flight: FlightRecord,
+  home: string | null,
+): boolean {
+  if (flight.arrIata === trip[0].depIata) return true;
+
+  // Home by any airport, TSA for TPE: the one chosen, or else where the trip began.
+  // A flight within that country is not coming home from anywhere, or a trip round
+  // it would end at its first stop.
+  const homeCountry = home ?? trip[0].depCountry;
+  return (
+    hasCountry(flight.arrCountry) &&
+    flight.arrCountry === homeCountry &&
+    flight.depCountry !== flight.arrCountry
+  );
+}
+
+type Joins = (last: FlightRecord, next: FlightRecord) => boolean;
+
+/** Flights flown, in the order they happened, cut into trips by `joins`. */
+function groupFlights(
+  flights: readonly FlightRecord[],
+  home: string | null,
+  joins: Joins,
+): FlightRecord[][] {
+  const trips: FlightRecord[][] = [];
+
+  for (const flight of [...flown(flights)].sort((a, b) => a.depScheduledUtc - b.depScheduledUtc)) {
+    const trip = trips[trips.length - 1];
+    const last = trip?.[trip.length - 1];
+    const soonEnough =
+      home !== null || (last && flight.depScheduledUtc - last.arrScheduledUtc <= LONGEST_STAY_MS);
+
+    if (trip && last && soonEnough && !isBackHome(trip, last, home) && joins(last, flight)) {
+      trip.push(flight);
+    } else {
+      trips.push([flight]);
+    }
+  }
+
+  return trips;
+}
+
+const sameAirport: Joins = (last, next) => next.depIata === last.arrIata;
+
+/**
+ * Trips as the airports see them: a flight carries on only from the airport the last
+ * one reached. In at Tokyo and out at Osaka is two flights, each with its own
+ * airports: TPE 2, NRT 1, KIX 1.
+ */
+export function tripsOf(
+  flights: readonly FlightRecord[],
+  home: string | null = null,
+): FlightRecord[][] {
+  return groupFlights(flights, home, sameAirport);
+}
+
+/**
+ * Trips as the countries see them: in at Tokyo and out at Osaka is one trip to Japan.
+ * Nothing records a trip, so it is worked out: flights follow on from the airport or
+ * the country the last one reached, until one comes home.
+ */
+export function journeysOf(
+  flights: readonly FlightRecord[],
+  home: string | null = null,
+): FlightRecord[][] {
+  return groupFlights(
+    flights,
+    home,
+    (last, next) =>
+      sameAirport(last, next) || (hasCountry(next.depCountry) && next.depCountry === last.arrCountry),
+  );
+}
+
+/**
+ * A stop on the way to somewhere else, a day or less. Flown back where it came from
+ * instead, it was the place being visited, however short.
+ */
+function isConnection(arriving: FlightRecord, leaving: FlightRecord | undefined): boolean {
+  return (
+    leaving !== undefined &&
+    leaving.depScheduledUtc - arriving.arrScheduledUtc <= LONGEST_CONNECTION_MS &&
+    leaving.arrCountry !== arriving.depCountry
+  );
+}
+
+/** The countries a trip visited, connections left out. */
+export function visitedOn(journey: readonly FlightRecord[]): Set<string> {
+  const visited = new Set<string>();
+  if (hasCountry(journey[0].depCountry)) visited.add(journey[0].depCountry);
+
+  journey.forEach((flight, index) => {
+    if (hasCountry(flight.arrCountry) && !isConnection(flight, journey[index + 1])) {
+      visited.add(flight.arrCountry);
+    }
+  });
+  return visited;
+}
+
+export function computePassportStats(
+  flights: FlightRecord[],
+  home: string | null = null,
+): PassportStats {
   const targetFlights = flown(flights);
 
   if (targetFlights.length === 0) {
@@ -32,23 +146,24 @@ export function computePassportStats(flights: FlightRecord[]): PassportStats {
 
   let totalMinutes = 0;
   let totalKm = 0;
-  const countryCodesSet = new Set<string>();
-  const airportCounts = new Map<string, number>();
-
   for (const flight of targetFlights) {
     totalMinutes += flight.durationMinutes;
     totalKm += flight.distanceKm ?? 0;
-
-    // Track origin airport & country
-    const depUpper = flight.depIata.toUpperCase();
-    airportCounts.set(depUpper, (airportCounts.get(depUpper) ?? 0) + 1);
-    if (flight.depCountry) countryCodesSet.add(flight.depCountry);
-
-    // Track destination airport & country
-    const arrUpper = flight.arrIata.toUpperCase();
-    airportCounts.set(arrUpper, (airportCounts.get(arrUpper) ?? 0) + 1);
-    if (flight.arrCountry) countryCodesSet.add(flight.arrCountry);
   }
+
+  const countryCodesSet = new Set(
+    journeysOf(targetFlights, home).flatMap((journey) => [...visitedOn(journey)]),
+  );
+
+  // By the trip, not the flight: there and back is one visit to each airport.
+  const airportCounts = new Map<string, number>();
+  for (const trip of tripsOf(targetFlights, home)) {
+    const used = new Set(trip.flatMap((f) => [f.depIata.toUpperCase(), f.arrIata.toUpperCase()]));
+    for (const iata of used) airportCounts.set(iata, (airportCounts.get(iata) ?? 0) + 1);
+  }
+
+  // Every trip starts there, so it says nothing about where the flying has gone.
+  if (home) countryCodesSet.delete(home);
 
   const airportVisits = Array.from(airportCounts.entries())
     .map(([iata, count]) => ({ iata, count }))
@@ -73,10 +188,10 @@ function mostFirst<T>(count: (item: T) => number, name: (item: T) => string) {
   return (a: T, b: T) => count(b) - count(a) || name(a).localeCompare(name(b));
 }
 
-/** The years with a flight flown in them, newest first. */
+/** The years with a flight flown in them, in order. */
 export function flownYears(flights: readonly FlightRecord[]): string[] {
   const years = new Set(flown(flights).map(yearOf));
-  return Array.from(years).sort((a, b) => b.localeCompare(a));
+  return Array.from(years).sort();
 }
 
 // The departure date is on the airport's clocks, the same as the ticket. UTC
@@ -91,42 +206,92 @@ export function flightsInYear(flights: FlightRecord[], year: string | null): Fli
 
 export interface CountryStamp {
   code: string;
-  /** Every flight flown that left or reached the country, newest first. */
+  /** The trips that visited it. A connection there is not one. */
+  trips: number;
+  /** Every flight of those trips that left or reached the country, newest first. */
   flights: FlightRecord[];
   firstDate: string;
 }
 
 /** The countries flown to and from, the most flown first. */
-export function countryStamps(flights: readonly FlightRecord[]): CountryStamp[] {
-  const byCode = new Map<string, FlightRecord[]>();
+export function countryStamps(
+  flights: readonly FlightRecord[],
+  home: string | null = null,
+): CountryStamp[] {
+  const byCode = new Map<string, { trips: number; flights: FlightRecord[] }>();
 
-  for (const flight of flown(flights)) {
-    // A Set, so a domestic flight is one flight rather than two.
-    for (const code of new Set([flight.depCountry, flight.arrCountry])) {
-      if (!code) continue;
-      byCode.set(code, [...(byCode.get(code) ?? []), flight]);
+  for (const journey of journeysOf(flights, home)) {
+    for (const code of visitedOn(journey)) {
+      if (code === home) continue;
+      const stamp = byCode.get(code) ?? { trips: 0, flights: [] };
+      const touched = journey.filter((f) => f.depCountry === code || f.arrCountry === code);
+      byCode.set(code, { trips: stamp.trips + 1, flights: [...stamp.flights, ...touched] });
     }
   }
 
-  return Array.from(byCode, ([code, touched]) => {
-    const newestFirst = [...touched].sort((a, b) => b.depDate.localeCompare(a.depDate));
-    return { code, flights: newestFirst, firstDate: newestFirst[newestFirst.length - 1].depDate };
+  return Array.from(byCode, ([code, { trips, flights: touched }]) => {
+    // By the date on the ticket, then by the moment, for two flights on one day.
+    const newestFirst = [...touched].sort(
+      (a, b) => b.depDate.localeCompare(a.depDate) || b.depScheduledUtc - a.depScheduledUtc,
+    );
+    return {
+      code,
+      trips,
+      flights: newestFirst,
+      firstDate: newestFirst[newestFirst.length - 1].depDate,
+    };
   }).sort(
     mostFirst(
-      (stamp) => stamp.flights.length,
+      (stamp) => stamp.trips,
       (stamp) => stamp.code,
     ),
   );
 }
 
-/** The airlines flown, the most flown first. */
-export function rankAirlines(flights: readonly FlightRecord[]): Array<{ name: string; count: number }> {
+/** Every country a flight touches, the most first, whether flown yet or not. */
+export function knownCountries(flights: readonly FlightRecord[]): string[] {
   const counts = new Map<string, number>();
-  for (const f of flown(flights)) {
-    const name = f.airlineName || f.airlineCode;
-    counts.set(name, (counts.get(name) ?? 0) + 1);
+
+  for (const flight of flights) {
+    for (const code of new Set([flight.depCountry, flight.arrCountry])) {
+      if (code) counts.set(code, (counts.get(code) ?? 0) + 1);
+    }
   }
-  return Array.from(counts, ([name, count]) => ({ name, count })).sort(
+
+  return Array.from(counts, ([code, count]) => ({ code, count }))
+    .sort(
+      mostFirst(
+        (country) => country.count,
+        (country) => country.code,
+      ),
+    )
+    .map((country) => country.code);
+}
+
+/**
+ * The airlines flown, the most flown first. An airline is its code: the same one is
+ * EVA Air looked up, BR when the API gave no name, and whatever was typed by hand,
+ * and counted by name it was three airlines. It is called by the name its flights
+ * used most, a real name before the bare code.
+ */
+export function rankAirlines(flights: readonly FlightRecord[]): Array<{ name: string; count: number }> {
+  const byCode = new Map<string, { count: number; names: Map<string, number> }>();
+  for (const f of flown(flights)) {
+    const airline = byCode.get(f.airlineCode) ?? { count: 0, names: new Map<string, number>() };
+    airline.count += 1;
+    const name = f.airlineName || f.airlineCode;
+    airline.names.set(name, (airline.names.get(name) ?? 0) + 1);
+    byCode.set(f.airlineCode, airline);
+  }
+
+  const nameOf = (code: string, names: Map<string, number>): string => {
+    const [best] = [...names]
+      .filter(([name]) => name !== code)
+      .sort(([a, x], [b, y]) => y - x || a.localeCompare(b));
+    return best?.[0] ?? code;
+  };
+
+  return Array.from(byCode, ([code, { count, names }]) => ({ name: nameOf(code, names), count })).sort(
     mostFirst(
       (airline) => airline.count,
       (airline) => airline.name,
@@ -172,10 +337,4 @@ export function airportCity(flights: readonly FlightRecord[], iata: string): str
     if (f.arrIata === iata && f.arrCity) return f.arrCity;
   }
   return null;
-}
-
-const EQUATOR_KM = 40_075;
-
-export function timesAroundEarth(km: number): number {
-  return km / EQUATOR_KM;
 }
