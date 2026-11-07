@@ -59,7 +59,7 @@ export interface FlightRecord {
 }
 
 /** 'api' for a timetable looked up; 'user' for one typed in when none could be. */
-/** `nearby`: too old to look up, so taken from a recent day; see flightLookup.ts. */
+/** `nearby`: missing on its own day or too old, so taken from a nearby day; see flightLookup.ts. */
 export type ScheduleSource = 'api' | 'user' | 'nearby';
 
 /** One flight as the status API describes it. */
@@ -99,6 +99,19 @@ export interface FlightDocRecord {
   fileName: string;
   localUri: string;
   mimeType: string;
+  createdAt: number;
+}
+
+/**
+ * A link for a trip: a plan, a booking, an album. Kept on a flight because a trip is
+ * worked out, never stored; see trips.ts.
+ */
+export interface FlightLinkRecord {
+  id: string;
+  flightId: string;
+  url: string;
+  /** Null when none was given: the site's name is shown instead. */
+  title: string | null;
   createdAt: number;
 }
 

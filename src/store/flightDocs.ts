@@ -14,6 +14,7 @@
 
 import type { FlightDocRecord, FlightRecord } from '../flights/types';
 import type { SqlDriver } from './driver';
+import { moveFlightLinks } from './flightLinks';
 import {
   deleteFlight,
   deleteFlightDoc,
@@ -123,11 +124,17 @@ export async function removeFlightDoc(
   removeQuietly(files, doc.localUri);
 }
 
+/**
+ * `heir` is the flight that keeps its links, another of its trip (trips.linkHeir).
+ * Without one they go with it.
+ */
 export async function deleteFlightAndDocs(
   driver: SqlDriver,
   files: DocFiles,
   flightId: string,
+  heir: string | null = null,
 ): Promise<void> {
+  if (heir) await moveFlightLinks(driver, flightId, heir);
   const docs = await listFlightDocs(driver, flightId);
   for (const doc of docs) await deleteFlightDoc(driver, doc.id);
   await deleteFlight(driver, flightId);

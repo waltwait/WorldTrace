@@ -6,6 +6,8 @@
  *   flight_schedule  the timetable: looked up, or typed in when it could not be
  *   flight_status    what changes up to the day it flies
  *
+ * and beside them a flight's documents and its trip's links.
+ *
  * Kept completely apart from points and fog_tiles, so flight data never pollutes
  * ground GPS fog-of-war. This runs on the screens' connection only: the two
  * connections migrating at once could fail, and on the background task's that
@@ -77,6 +79,17 @@ const STATEMENTS = [
    )`,
 
   `CREATE INDEX IF NOT EXISTS idx_flight_docs_flight_id ON flight_docs(flight_id)`,
+
+  // A trip's links, kept on one of its flights: nothing stores a trip.
+  `CREATE TABLE IF NOT EXISTS flight_links (
+     id         TEXT PRIMARY KEY,
+     flight_id  TEXT NOT NULL REFERENCES flights(id) ON DELETE CASCADE,
+     url        TEXT NOT NULL,
+     title      TEXT,
+     created_at INTEGER NOT NULL
+   )`,
+
+  `CREATE INDEX IF NOT EXISTS idx_flight_links_flight_id ON flight_links(flight_id)`,
 ];
 
 const KM_PER_MILE = 1.609344;

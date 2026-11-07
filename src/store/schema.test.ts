@@ -25,6 +25,7 @@ describe('migrate', () => {
     expect(await tableNames()).toEqual([
       'achievements',
       'flight_docs',
+      'flight_links',
       'flight_schedule',
       'flight_status',
       'flights',

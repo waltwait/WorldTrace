@@ -9,6 +9,7 @@ import {
   saveNewFlight,
   type DocFiles,
 } from './flightDocs';
+import { insertFlightLink, listFlightLinks } from './flightLinks';
 import { getFlightById, insertFlight, listFlightDocs, listFlights } from './flights';
 import { migrate } from './schema';
 import { createNodeDriver } from './testing/nodeDriver';
@@ -109,6 +110,17 @@ describe('removing documents', () => {
     await deleteFlightAndDocs(driver, files, 'f-1');
     expect(files.stored.size).toBe(0);
     expect(await getFlightById(driver, 'f-1')).toBeNull();
+  });
+
+  // The links were the trip's, and the trip is still there.
+  test('hands its links on to the flight named', async () => {
+    await insertFlight(driver, { ...flight, id: 'f-2' });
+    const link = { id: 'l-1', flightId: 'f-1', url: 'https://example.com', title: null, createdAt: 1 };
+    await insertFlightLink(driver, link);
+
+    await deleteFlightAndDocs(driver, memoryFiles(), 'f-1', 'f-2');
+
+    expect(await listFlightLinks(driver)).toEqual([{ ...link, flightId: 'f-2' }]);
   });
 });
 

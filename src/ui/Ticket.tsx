@@ -8,87 +8,113 @@ import { StyleSheet, View } from 'react-native';
 import Svg, { Line } from 'react-native-svg';
 import type { TicketView } from '../flights/flightDisplay';
 import { PressScale } from './PressScale';
+import { SwapText } from './SwapText';
 import { useTheme } from './ThemeProvider';
 import { FONT, radius } from './themes';
 import { Text } from './Text';
 
-const HEIGHT = 132;
-const STUB = 104;
-const NOTCH = 22;
+const SIZES = {
+  full: { height: 132, stub: 104, notch: 22 },
+  // Inside a trip's block on the passport, which is the soft colour the ticket would be.
+  small: { height: 76, stub: 76, notch: 16 },
+} as const;
 
 export function Ticket({
   ticket,
   heading,
+  small = false,
   onPress,
+  onLongPress,
 }: {
   ticket: TicketView;
+  /** Above the route; on a small ticket, the one line under it. */
   heading: string;
+  small?: boolean;
   onPress?: () => void;
+  onLongPress?: () => void;
 }) {
   const t = useTheme();
-  const background = ticket.past ? t.soft : t.tile;
+  const { height, stub, notch: notchSize } = SIZES[small ? 'small' : 'full'];
+  const background = ticket.past ? (small ? t.ground : t.soft) : t.tile;
   const primary = ticket.past ? t.ink : '#FFFFFF';
   const secondary = ticket.past ? t.muted : t.onTile;
-  const notch = { backgroundColor: t.ground, right: STUB - NOTCH / 2 };
+  const notch = {
+    width: notchSize,
+    height: notchSize,
+    borderRadius: notchSize / 2,
+    backgroundColor: small ? t.soft : t.ground,
+    right: stub - notchSize / 2,
+  };
+  const route = (
+    <Text
+      style={[styles.route, small && styles.routeSmall, { color: primary }]}
+      numberOfLines={1}
+      adjustsFontSizeToFit
+      minimumFontScale={0.7}
+    >
+      {ticket.from} → {ticket.to}
+    </Text>
+  );
 
   return (
-    <PressScale style={[styles.ticket, { backgroundColor: background }]} onPress={onPress}>
-      <View style={styles.main}>
-        <Text style={[styles.small, { color: secondary }]} numberOfLines={1}>
-          {heading}
-        </Text>
-        <Text
-          style={[styles.route, { color: primary }]}
-          numberOfLines={1}
-          adjustsFontSizeToFit
-          minimumFontScale={0.7}
-        >
-          {ticket.from} → {ticket.to}
-        </Text>
-        <Text style={[styles.small, { color: secondary }]} numberOfLines={1}>
-          {ticket.when}
-        </Text>
-      </View>
+    <PressScale
+      style={[styles.ticket, small && styles.ticketSmall, { height, backgroundColor: background }]}
+      onPress={onPress}
+      onLongPress={onLongPress}
+    >
+      {small ? (
+        <View style={[styles.main, styles.mainSmall]}>
+          {route}
+          <SwapText text={heading} style={[styles.smallest, { color: secondary }]} numberOfLines={1} />
+        </View>
+      ) : (
+        <View style={styles.main}>
+          <SwapText text={heading} style={[styles.small, { color: secondary }]} numberOfLines={1} />
+          {route}
+          <SwapText text={ticket.when} style={[styles.small, { color: secondary }]} numberOfLines={1} />
+        </View>
+      )}
 
-      <View style={styles.stub}>
+      <View style={[styles.stub, { width: stub }]}>
         {ticket.stubLabel ? (
-          <Text style={[styles.stubLabel, { color: secondary }]}>{ticket.stubLabel}</Text>
+          <SwapText text={ticket.stubLabel} style={[styles.stubLabel, { color: secondary }]} />
         ) : null}
-        <Text
-          style={[styles.stubValue, { color: primary }]}
+        <SwapText
+          text={ticket.stubValue}
+          style={[styles.stubValue, small && styles.stubValueSmall, { color: primary }]}
           numberOfLines={1}
           adjustsFontSizeToFit
           minimumFontScale={0.6}
-        >
-          {ticket.stubValue}
-        </Text>
+        />
       </View>
 
       {/* A dashed border on one side alone is not drawn dashed on Android. */}
-      <Svg width={2} height={HEIGHT} style={styles.tear}>
-        <Line x1={1} y1={0} x2={1} y2={HEIGHT} stroke={secondary} strokeWidth={2} strokeDasharray="5 6" />
+      <Svg width={2} height={height} style={[styles.tear, { right: stub - 1 }]}>
+        <Line x1={1} y1={0} x2={1} y2={height} stroke={secondary} strokeWidth={2} strokeDasharray="5 6" />
       </Svg>
-      <View style={[styles.notch, styles.notchTop, notch]} />
-      <View style={[styles.notch, styles.notchBottom, notch]} />
+      <View style={[styles.notch, { top: -notchSize / 2 }, notch]} />
+      <View style={[styles.notch, { bottom: -notchSize / 2 }, notch]} />
     </PressScale>
   );
 }
 
 const styles = StyleSheet.create({
   ticket: {
-    height: HEIGHT,
     borderRadius: radius.ticket,
     flexDirection: 'row',
     overflow: 'hidden',
   },
+  ticketSmall: { borderRadius: 18 },
   main: { flex: 1, paddingVertical: 16, paddingHorizontal: 20, justifyContent: 'space-between' },
+  mainSmall: { paddingVertical: 10, paddingHorizontal: 16, justifyContent: 'center', gap: 2 },
   small: { fontSize: 14 },
+  smallest: { fontSize: 12 },
   route: { fontFamily: FONT.extraBold, fontSize: 30, letterSpacing: -0.5 },
-  stub: { width: STUB, alignItems: 'center', justifyContent: 'center', gap: 4, paddingHorizontal: 8 },
+  routeSmall: { fontSize: 21, letterSpacing: -0.3 },
+  stub: { alignItems: 'center', justifyContent: 'center', gap: 4, paddingHorizontal: 8 },
   stubLabel: { fontSize: 13 },
   stubValue: { fontFamily: FONT.extraBold, fontSize: 26 },
-  tear: { position: 'absolute', top: 0, right: STUB - 1 },
-  notch: { position: 'absolute', width: NOTCH, height: NOTCH, borderRadius: NOTCH / 2 },
-  notchTop: { top: -NOTCH / 2 },
-  notchBottom: { bottom: -NOTCH / 2 },
+  stubValueSmall: { fontSize: 18 },
+  tear: { position: 'absolute', top: 0 },
+  notch: { position: 'absolute' },
 });
