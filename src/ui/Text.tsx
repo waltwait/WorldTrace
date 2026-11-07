@@ -39,13 +39,18 @@ function withChineseSetApart(children: ReactNode, noto: string): ReactNode {
   });
 }
 
+/** Plain strings split so Sora never drops Chinese onto the phone's fallback face. */
+export function setChineseApart(children: ReactNode, fontFamily: string): ReactNode {
+  const noto = notoBeside(fontFamily);
+  return noto ? withChineseSetApart(children, noto) : children;
+}
+
 export function Text({ style, children, ...rest }: TextProps) {
   const resolved = textStyle(style);
-  const noto = notoBeside(resolved.fontFamily);
 
   return (
     <NativeText {...rest} style={resolved}>
-      {noto ? withChineseSetApart(children, noto) : children}
+      {setChineseApart(children, resolved.fontFamily)}
     </NativeText>
   );
 }

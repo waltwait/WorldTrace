@@ -10,8 +10,10 @@
  * The wallet is always there, or the map would take its place and fill the screen.
  */
 
-import { memo, useState } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 import {
+  Animated,
+  Easing,
   Pressable,
   StyleSheet,
   View,
@@ -23,13 +25,15 @@ import type { FlightRecord } from '../flights/types';
 import { formatEarthShare } from './earth';
 import { FogMap, MapCredit, RecordingStatus, type FogMapProps } from './FogMap';
 import { formatArea, formatDistance } from './format';
-import { cropOffset, type Size } from './mapCrop';
+import { cropOffset, steadySize, type Size } from './mapCrop';
+import { CURVE, DURATION } from './motion';
 import { PassportCard } from './PassportCard';
 import { PressScale } from './PressScale';
 import { RollingNumber } from './RollingNumber';
 import { Ticket } from './Ticket';
 import { useStyles } from './ThemeProvider';
 import { FONT, radius, TOOLBAR_CLEARANCE, type Theme } from './themes';
+import { useReducedMotion } from './useReducedMotion';
 import { Text } from './Text';
 
 export const OverviewScreen = memo(function OverviewScreen({
@@ -47,19 +51,55 @@ export const OverviewScreen = memo(function OverviewScreen({
   onOpenPassport: () => void;
 }) {
   const styles = useStyles(make);
+  const reduced = useReducedMotion();
   const { recorder, flights, expanded } = map;
   const shown = walletFlight(flights, Date.now());
   const window = useWindowDimensions();
   const [page, setPage] = useState<Size>({ width: window.width, height: window.height });
   const [tile, setTile] = useState<Size>(page);
+  const pageMeasured = useRef(false);
+  const wasExpanded = useRef(expanded);
+  const chrome = useRef(new Animated.Value(1)).current;
+
+  useEffect(() => {
+    const returning = !expanded && wasExpanded.current;
+    wasExpanded.current = expanded;
+    if (!returning) return;
+
+    if (reduced) {
+      chrome.setValue(1);
+      return;
+    }
+
+    chrome.setValue(0);
+    const animation = Animated.timing(chrome, {
+      toValue: 1,
+      duration: DURATION.enter,
+      easing: Easing.bezier(...CURVE.enter),
+      useNativeDriver: true,
+    });
+    animation.start();
+    return () => animation.stop();
+  }, [chrome, expanded, reduced]);
 
   const sizeOf = (event: LayoutChangeEvent): Size => ({
     width: event.nativeEvent.layout.width,
     height: event.nativeEvent.layout.height,
   });
 
+  const chromeShift = chrome.interpolate({
+    inputRange: [0, 1],
+    outputRange: [10, 0],
+  });
+
   return (
-    <View style={styles.screen} onLayout={(event) => setPage(sizeOf(event))}>
+    <View style={styles.screen} onLayout={(event) => {
+        // The first report is the truth: `window` can be taller than the page.
+        const next = sizeOf(event);
+        setPage((current) => (pageMeasured.current ? steadySize(current, next) : next));
+        pageMeasured.current = true;
+      }}
+    >
       <View
         style={expanded ? styles.mapOpen : styles.mapTile}
         onLayout={(event) => {
@@ -84,7 +124,7 @@ export const OverviewScreen = memo(function OverviewScreen({
                 <RecordingStatus recorder={recorder} />
               </View>
             ) : null}
-            <View style={styles.areaChip} pointerEvents="none">
+            <Animated.View style={[styles.areaChip, { opacity: chrome }]} pointerEvents="none">
               <RollingNumber
                 value={recorder.exploredSquareMeters}
                 format={formatArea}
@@ -92,13 +132,21 @@ export const OverviewScreen = memo(function OverviewScreen({
                 style={styles.area}
                 fit
               />
-            </View>
+            </Animated.View>
           </>
         )}
       </View>
 
       {expanded ? null : (
-        <>
+        <Animated.View
+          style={[
+            styles.chrome,
+            {
+              opacity: chrome,
+              transform: [{ translateY: chromeShift }],
+            },
+          ]}
+        >
           <PressScale style={styles.facts} onPress={onOpenExplore}>
             <Text style={styles.fact}>
               走過 <Text style={styles.factValue}>{formatDistance(recorder.distanceMeters)}</Text>
@@ -130,7 +178,7 @@ export const OverviewScreen = memo(function OverviewScreen({
               )}
             </View>
           </View>
-        </>
+        </Animated.View>
       )}
     </View>
   );
@@ -172,6 +220,7 @@ const make = (t: Theme) =>
       letterSpacing: -1,
     },
 
+    chrome: { gap: 12 },
     facts: {
       flexDirection: 'row',
       justifyContent: 'space-between',

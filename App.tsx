@@ -1,6 +1,7 @@
 import { StatusBar } from 'expo-status-bar';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Animated,
   AppState,
   BackHandler,
   ScrollView,
@@ -11,6 +12,7 @@ import {
   type NativeSyntheticEvent,
 } from 'react-native';
 import { autoBackUp } from './src/cloud/cloudBackup';
+import { onReminderTapped, showRemindersInTheApp } from './src/flights/expoReminders';
 import type { TrackSegment } from './src/export/gpx';
 import type { FlightRecord } from './src/flights/types';
 import { resolvePlaces } from './src/places/resolvePlaces';
@@ -20,13 +22,13 @@ import { DialogHost } from './src/ui/DialogHost';
 import { ExploreScreen } from './src/ui/ExploreScreen';
 import { FlightDetailSheet } from './src/ui/FlightDetailSheet';
 import { FlightsScreen } from './src/ui/FlightsScreen';
+import { HomeCountryProvider } from './src/ui/HomeCountry';
 import { openTab } from './src/ui/openedTabs';
 import { OverviewScreen } from './src/ui/OverviewScreen';
 import { pageAt, pagesBeside } from './src/ui/pager';
 import { PassportScreen } from './src/ui/PassportScreen';
 import { SettingsScreen } from './src/ui/SettingsScreen';
 import { ThemeProvider, useTheme } from './src/ui/ThemeProvider';
-import { TimelineScreen } from './src/ui/TimelineScreen';
 import { TABS, Toolbar } from './src/ui/Toolbar';
 import { useFlights } from './src/ui/useFlights';
 import { useReducedMotion } from './src/ui/useReducedMotion';
@@ -64,6 +66,8 @@ function useAutomaticBackup(): void {
   }, []);
 }
 
+showRemindersInTheApp();
+
 interface Highlight {
   label: string;
   segments: TrackSegment[];
@@ -72,7 +76,9 @@ interface Highlight {
 export default function App() {
   return (
     <ThemeProvider>
-      <Shell />
+      <HomeCountryProvider>
+        <Shell />
+      </HomeCountryProvider>
     </ThemeProvider>
   );
 }
@@ -86,8 +92,11 @@ function Shell() {
   const [highlighted, setHighlighted] = useState<Highlight | null>(null);
   const [focusedFlight, setFocusedFlight] = useState<FlightRecord | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  // A flight whose page should start by reading its boarding pass.
+  const [passFor, setPassFor] = useState<string | null>(null);
   const [inFlight, setInFlight] = useState(false);
   const [adding, setAdding] = useState(false);
+  const [addOpened, setAddOpened] = useState(false);
   const [exploring, setExploring] = useState(false);
   const [explored, setExplored] = useState(false);
   const [inPassport, setInPassport] = useState(false);
@@ -97,6 +106,7 @@ function Shell() {
 
   const { width } = useWindowDimensions();
   const pager = useRef<ScrollView>(null);
+  const scrollX = useRef(new Animated.Value(0)).current;
   // Where a tapped tab is heading. The scroll passes the pages between on its way,
   // and each would otherwise take the toolbar with it.
   const heading = useRef<number | null>(null);
@@ -136,6 +146,15 @@ function Shell() {
     [width],
   );
 
+  const onScroll = useMemo(
+    () =>
+      Animated.event([{ nativeEvent: { contentOffset: { x: scrollX } } }], {
+        useNativeDriver: true,
+        listener: onPagerScroll,
+      }),
+    [scrollX, onPagerScroll],
+  );
+
   // Before the finger has gone anywhere, so the next page is there when it arrives.
   const onDragStart = useCallback(() => {
     heading.current = null;
@@ -163,9 +182,11 @@ function Shell() {
     return () => subscription.remove();
   }, [expanded, collapse]);
 
+  // From 足跡, inside 探索: both close, and the day is shown on the map.
   const reviewDay = useCallback(
     (label: string, segments: TrackSegment[]) => {
       setHighlighted({ label, segments });
+      setExploring(false);
       goTo(0);
       setExpanded(true);
     },
@@ -184,8 +205,20 @@ function Shell() {
 
   const openFlight = useCallback((flight: FlightRecord) => {
     setSelectedId(flight.id);
+    setPassFor(null);
     setInFlight(true);
   }, []);
+
+  useEffect(
+    () =>
+      onReminderTapped((flightId, opens) => {
+        setSelectedId(flightId);
+        // The reminder was to photograph the pass: the page opens straight onto it.
+        setPassFor(opens === 'boardingPass' ? flightId : null);
+        setInFlight(true);
+      }),
+    [],
+  );
 
   const openExplore = useCallback(() => {
     setExplored(true);
@@ -200,8 +233,12 @@ function Shell() {
   }, []);
 
   const closePassport = useCallback(() => setInPassport(false), []);
-  const openAdd = useCallback(() => setAdding(true), []);
+  const openAdd = useCallback(() => {
+    setAddOpened(true);
+    setAdding(true);
+  }, []);
   const closeAdd = useCallback(() => setAdding(false), []);
+  const clearPass = useCallback(() => setPassFor(null), []);
   // The id stays, so the sheet still has a flight to show while it slides away.
   const closeFlight = useCallback(() => setInFlight(false), []);
 
@@ -219,7 +256,7 @@ function Shell() {
           the JS thread for seconds, and a swipe has to follow the finger through
           that. Pages are never unmounted, which keeps MapLibre's map alive. With
           the map open the drag belongs to the map. */}
-      <ScrollView
+      <Animated.ScrollView
         ref={pager}
         style={styles.screens}
         horizontal
@@ -229,7 +266,7 @@ function Shell() {
         overScrollMode="never"
         keyboardShouldPersistTaps="handled"
         scrollEventThrottle={16}
-        onScroll={onPagerScroll}
+        onScroll={onScroll}
         onScrollBeginDrag={onDragStart}
       >
         <View style={pageSize}>
@@ -249,17 +286,21 @@ function Shell() {
           />
         </View>
         <View style={pageSize}>
-          {opened.has(1) ? <TimelineScreen onSelectDay={reviewDay} active={index === 1} /> : null}
-        </View>
-        <View style={pageSize}>
-          {opened.has(2) ? (
+          {opened.has(1) ? (
             <FlightsScreen state={flights} onOpenFlight={openFlight} />
           ) : null}
         </View>
-        <View style={pageSize}>{opened.has(3) ? <SettingsScreen /> : null}</View>
-      </ScrollView>
+        <View style={pageSize}>{opened.has(2) ? <SettingsScreen flights={flights.flights} /> : null}</View>
+      </Animated.ScrollView>
 
-      {expanded ? null : <Toolbar active={index} onSelect={goTo} onAdd={openAdd} />}
+      <Toolbar
+        active={index}
+        scrollX={scrollX}
+        pageWidth={width}
+        hidden={expanded}
+        onSelect={goTo}
+        onAdd={openAdd}
+      />
 
       {passportOpened ? (
         <PassportScreen
@@ -277,18 +318,22 @@ function Shell() {
           visible={inFlight}
           onClose={closeFlight}
           onFlightUpdated={flights.updated}
-          onFlightDeleted={flights.removed}
           onViewOnMap={viewFlightOnMap}
+          readPassOnOpen={passFor === selected.id}
+          onPassStarted={clearPass}
         />
       ) : null}
 
-      <AddFlightSheet visible={adding} onClose={closeAdd} onFlightAdded={flights.added} />
+      {addOpened ? (
+        <AddFlightSheet visible={adding} onClose={closeAdd} onFlightAdded={flights.added} />
+      ) : null}
 
       {explored ? (
         <ExploreScreen
           recorder={recorder}
           visible={exploring}
           onClose={closeExplore}
+          onSelectDay={reviewDay}
         />
       ) : null}
 

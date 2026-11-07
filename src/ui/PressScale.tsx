@@ -22,7 +22,7 @@ import {
   type StyleProp,
   type ViewStyle,
 } from 'react-native';
-import { CURVE, DURATION, PRESS_SCALE } from './motion';
+import { CURVE, DURATION, LONG_PRESS_SCALE, PRESS_SCALE } from './motion';
 import { useReducedMotion } from './useReducedMotion';
 
 const PRESSED_OPACITY = 0.85;
@@ -33,6 +33,7 @@ export function PressScale({
   containerStyle,
   disabled,
   onPress,
+  onLongPress,
   hitSlop,
   label,
 }: {
@@ -43,6 +44,7 @@ export function PressScale({
   containerStyle?: StyleProp<ViewStyle>;
   disabled?: boolean;
   onPress?: PressableProps['onPress'];
+  onLongPress?: PressableProps['onLongPress'];
   hitSlop?: PressableProps['hitSlop'];
   /** What a screen reader says, for a control that is only an icon. */
   label?: string;
@@ -54,11 +56,23 @@ export function PressScale({
   const down = () => {
     scale.stopAnimation();
     dim.stopAnimation();
-    if (!reduced) scale.setValue(PRESS_SCALE);
     dim.setValue(PRESSED_OPACITY);
+    if (!reduced) {
+      scale.setValue(PRESS_SCALE);
+      if (onLongPress) {
+        Animated.timing(scale, {
+          toValue: LONG_PRESS_SCALE,
+          duration: DURATION.hold,
+          easing: Easing.bezier(...CURVE.move),
+          useNativeDriver: true,
+        }).start();
+      }
+    }
   };
 
   const up = () => {
+    scale.stopAnimation();
+    dim.stopAnimation();
     if (reduced) {
       dim.setValue(1);
       return;
@@ -75,6 +89,7 @@ export function PressScale({
     <Pressable
       style={containerStyle}
       onPress={onPress}
+      onLongPress={onLongPress}
       onPressIn={down}
       onPressOut={up}
       disabled={disabled}

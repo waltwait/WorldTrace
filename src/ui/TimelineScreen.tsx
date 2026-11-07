@@ -1,35 +1,43 @@
+/**
+ * 足跡: every day walked, by month, the newest first. Opened from 探索, since it is
+ * about walking; a day tapped is shown on the map.
+ */
+
 import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, SectionList, StyleSheet, View } from 'react-native';
 import type { TrackSegment } from '../export/gpx';
 import { database } from '../store/database';
 import { getCachedDays, listDays, loadTrack, type TrackDay } from '../store/track';
+import { FullScreenModal } from './FullScreenModal';
 import { Icon } from './Icon';
 import { PressScale } from './PressScale';
 import { useStyles, useTheme } from './ThemeProvider';
-import { radius, TOOLBAR_CLEARANCE, type Theme } from './themes';
+import { radius, type Theme } from './themes';
+import { SheetHeader } from './SheetHeader';
 import { dayTitle, groupDaysByMonth, timeSpan } from './trackDays';
 import { Text } from './Text';
 
 export interface TimelineScreenProps {
   /** Hand a day's track to the map for review. */
   onSelectDay: (label: string, segments: TrackSegment[]) => void;
-  /** Whether this is the page being looked at. */
-  active: boolean;
+  visible: boolean;
+  onClose: () => void;
 }
 
 export const TimelineScreen = memo(function TimelineScreen({
   onSelectDay,
-  active,
+  visible,
+  onClose,
 }: TimelineScreenProps) {
   const styles = useStyles(make);
   const t = useTheme();
   const [days, setDays] = useState<TrackDay[] | null>(() => getCachedDays());
   const [busy, setBusy] = useState<string | null>(null);
 
-  // Every time the page comes back rather than once: it stays mounted, and a day
-  // walked since it opened would otherwise not be there.
+  // Every time the page opens rather than once: a day walked since it last opened
+  // would otherwise not be there.
   useEffect(() => {
-    if (!active) return;
+    if (!visible) return;
 
     let cancelled = false;
 
@@ -42,7 +50,7 @@ export const TimelineScreen = memo(function TimelineScreen({
     return () => {
       cancelled = true;
     };
-  }, [active]);
+  }, [visible]);
 
   const open = useCallback(
     async (day: TrackDay) => {
@@ -64,8 +72,11 @@ export const TimelineScreen = memo(function TimelineScreen({
   // rows, and building them all at once put them all on the JS thread at the
   // moment the tab opened.
   return (
+    <FullScreenModal visible={visible} onRequestClose={onClose}>
+      <View style={styles.screen}>
+    <SheetHeader title="足跡" onBack={onClose} />
     <SectionList
-      style={styles.screen}
+      style={styles.list}
       contentContainerStyle={styles.content}
       sections={sections}
       keyExtractor={(day) => day.date}
@@ -75,11 +86,11 @@ export const TimelineScreen = memo(function TimelineScreen({
       windowSize={7}
       maxToRenderPerBatch={8}
       ListHeaderComponent={
-        <View style={styles.header}>
-          <Text style={styles.title}>足跡</Text>
-          {days === null ? <Text style={styles.hint}>讀取中…</Text> : null}
-          {days?.length === 0 ? <Text style={styles.hint}>還沒有任何記錄</Text> : null}
-        </View>
+        days === null || days.length === 0 ? (
+          <View style={styles.header}>
+            <Text style={styles.hint}>{days === null ? '讀取中…' : '還沒有任何記錄'}</Text>
+          </View>
+        ) : null
       }
       renderSectionHeader={({ section }) => <Text style={styles.month}>{section.title}</Text>}
       renderItem={({ item: day, index, section }) => (
@@ -103,15 +114,17 @@ export const TimelineScreen = memo(function TimelineScreen({
         </PressScale>
       )}
     />
+      </View>
+    </FullScreenModal>
   );
 });
 
 const make = (t: Theme) =>
   StyleSheet.create({
     screen: { flex: 1, backgroundColor: t.ground },
-    content: { paddingHorizontal: 16, paddingTop: 56, paddingBottom: TOOLBAR_CLEARANCE + 16 },
+    list: { flex: 1 },
+    content: { paddingHorizontal: 16, paddingTop: 4, paddingBottom: 32 },
     header: { gap: 8, paddingHorizontal: 6, marginBottom: 8 },
-    title: { color: t.ink, fontSize: 34, fontWeight: '900' },
     hint: { color: t.muted, fontSize: 15 },
     month: {
       color: t.muted,

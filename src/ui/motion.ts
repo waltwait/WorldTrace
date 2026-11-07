@@ -16,6 +16,8 @@
 export const DURATION = {
   /** Cards, rows, banners arriving. */
   enter: 220,
+  /** Something leaving: quicker than arriving, since the user asked it to go. */
+  exit: 180,
   /** A whole page sliding past. Distance earns the extra time. */
   page: 280,
   /** A bar filling: slow enough to read as filling rather than jumping. */
@@ -24,6 +26,8 @@ export const DURATION = {
   count: 520,
   /** A pressed control coming back up. Going down is instant. */
   press: 160,
+  /** A control with a long-press settling deeper while the finger holds. */
+  hold: 380,
   /** Old text leaving a button. Quick: the user's eye is already on the new one. */
   swapOut: 90,
   /** New text arriving. */
@@ -35,6 +39,12 @@ export const DURATION = {
  * collapses and draws the eye to the shrinking rather than to what it did.
  */
 export const PRESS_SCALE = 0.97;
+
+/**
+ * How far a control with a long-press action sinks while held, so the thumb sees
+ * that holding is doing something before the confirmation arrives.
+ */
+export const LONG_PRESS_SCALE = 0.945;
 
 /** How far text travels as it swaps, in points. Enough to read as a change. */
 export const SWAP_OFFSET = 4;
@@ -57,6 +67,12 @@ export const STAGGER = {
 export function staggerDelay(index: number): number {
   if (!(index > 0)) return 0;
   return Math.min(index, STAGGER.maxSteps) * STAGGER.step;
+}
+
+/** Where a sliding pill indicator sits on a row of equal-width slots. */
+export function pillOffset(index: number, itemWidth: number, gap: number): number {
+  if (!(index > 0)) return 0;
+  return index * (itemWidth + gap);
 }
 
 export interface BarTransform {
@@ -131,4 +147,44 @@ export function shouldFlip(change: {
 }): boolean {
   if (change.arriving) return false;
   return shouldCount(change);
+}
+
+export interface SpringPhysics {
+  stiffness: number;
+  damping: number;
+  mass: number;
+  restDisplacementThreshold: number;
+  restSpeedThreshold: number;
+}
+
+/**
+ * Apple's (responseSeconds, dampingRatio) spring converted to stiffness/damping/mass,
+ * as iOS describes a spring: ω = 2π / response, stiffness = ω², damping = 2ζω.
+ * Threshold 0.0005 is ~1 px on a 2340 px screen so the last frame never snaps.
+ */
+export function springForResponse(responseSeconds: number, dampingRatio = 1): SpringPhysics {
+  const omega = (2 * Math.PI) / responseSeconds;
+  return {
+    stiffness: omega * omega,
+    damping: 2 * dampingRatio * omega,
+    mass: 1,
+    restDisplacementThreshold: 0.0005,
+    restSpeedThreshold: 0.005,
+  };
+}
+
+/**
+ * Full-screen sheet open/close springs:
+ * critically damped (ζ = 1, no bounce), closing faster than opening (0.30 s vs 0.42 s).
+ */
+export const SCREEN_SPRING = {
+  open: springForResponse(0.42, 1),
+  close: springForResponse(0.3, 1),
+} as const;
+
+/** Vertical translation for a full-screen sheet at progress 0 (shut) .. 1 (open). */
+export function slideOffsetPx(progress: number, screenHeight: number): number {
+  const clamped = Math.min(Math.max(progress, 0), 1);
+  const offset = (1 - clamped) * screenHeight;
+  return offset === 0 ? 0 : offset;
 }

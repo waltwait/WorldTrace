@@ -185,3 +185,13 @@ export function buttonLabel(
   if (phase.kind === 'busy') return options.busyLabel ?? options.label;
   return options.tickInText ? `✓ ${phase.message}` : phase.message;
 }
+
+/**
+ * Separates a trailing ellipsis from a busy label so three native-driver dots
+ * can hop beside steady text instead of SwapText flipping the whole word.
+ */
+export function splitBusyEllipsis(text: string): { stem: string; dots: boolean } {
+  if (text.endsWith('…')) return { stem: text.slice(0, -1), dots: true };
+  if (text.endsWith('...')) return { stem: text.slice(0, -3), dots: true };
+  return { stem: text, dots: false };
+}

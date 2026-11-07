@@ -3,10 +3,15 @@ import {
   barTransform,
   countUpValue,
   DURATION,
+  LONG_PRESS_SCALE,
+  pillOffset,
   PRESS_SCALE,
   sameShown,
+  SCREEN_SPRING,
   shouldCount,
   shouldFlip,
+  slideOffsetPx,
+  springForResponse,
   staggerDelay,
   STAGGER,
   SWAP_OFFSET,
@@ -179,5 +184,56 @@ describe('shouldFlip', () => {
 
   it('does not flip when the formatted text is unchanged', () => {
     expect(shouldFlip({ from: 70.021, to: 70.024, arriving: false, format: area })).toBe(false);
+  });
+});
+
+describe('long-press and exit feedback', () => {
+  it('settles deeper than an ordinary tap while a hold is building', () => {
+    expect(LONG_PRESS_SCALE).toBeLessThan(PRESS_SCALE);
+    expect(LONG_PRESS_SCALE).toBeGreaterThanOrEqual(0.93);
+  });
+
+  it('reaches the hold depth before the OS long-press fires (~500 ms)', () => {
+    expect(DURATION.hold).toBeGreaterThan(200);
+    expect(DURATION.hold).toBeLessThan(500);
+  });
+
+  it('leaves faster than an entrance arrives', () => {
+    expect(DURATION.exit).toBeGreaterThan(0);
+    expect(DURATION.exit).toBeLessThan(DURATION.enter);
+  });
+});
+
+describe('pillOffset', () => {
+  it('places the indicator on the chosen slot', () => {
+    expect(pillOffset(0, 56, 4)).toBe(0);
+    expect(pillOffset(1, 56, 4)).toBe(60);
+    expect(pillOffset(3, 56, 4)).toBe(180);
+  });
+
+  it('clamps a negative index to the first slot', () => {
+    expect(pillOffset(-1, 56, 4)).toBe(0);
+  });
+});
+
+describe('full-screen spring', () => {
+  it('computes a critically damped spring (c² = 4km) when dampingRatio is 1', () => {
+    const spec = springForResponse(0.42, 1);
+    expect(spec.mass).toBe(1);
+    expect(spec.stiffness).toBeCloseTo(((2 * Math.PI) / 0.42) ** 2, 4);
+    expect(spec.damping ** 2).toBeCloseTo(4 * spec.stiffness * spec.mass, 4);
+  });
+
+  it('closes faster than it opens, with sub-pixel rest threshold on tall phones', () => {
+    expect(SCREEN_SPRING.close.stiffness).toBeGreaterThan(SCREEN_SPRING.open.stiffness);
+    expect(SCREEN_SPRING.open.restDisplacementThreshold).toBeLessThanOrEqual(0.0005);
+    expect(SCREEN_SPRING.close.restDisplacementThreshold).toBeLessThanOrEqual(0.0005);
+  });
+
+  it('maps progress 0..1 to screenHeight..0 for vertical slide', () => {
+    expect(slideOffsetPx(0, 840)).toBe(840);
+    expect(slideOffsetPx(0.5, 840)).toBe(420);
+    expect(slideOffsetPx(1, 840)).toBe(0);
+    expect(slideOffsetPx(1.05, 840)).toBe(0);
   });
 });

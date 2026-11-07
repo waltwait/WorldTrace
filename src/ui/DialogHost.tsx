@@ -27,6 +27,8 @@ export function DialogHost() {
       visible={request !== null}
       transparent
       animationType="fade"
+      statusBarTranslucent
+      navigationBarTranslucent
       // Android's back gesture should behave like cancelling, not like
       // confirming — the system dialog does the same.
       onRequestClose={() => request && answer(request.id, false)}

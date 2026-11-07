@@ -14,18 +14,22 @@ import { useEffect, useRef, useState } from 'react';
 import { Animated, Easing, type StyleProp, type TextProps, type TextStyle } from 'react-native';
 import { CURVE, DURATION, SWAP_OFFSET } from './motion';
 import { useReducedMotion } from './useReducedMotion';
-import { textStyle } from './Text';
+import { setChineseApart, textStyle } from './Text';
 
 export function SwapText({
   text,
   style,
   numberOfLines,
   ellipsizeMode,
+  adjustsFontSizeToFit,
+  minimumFontScale,
 }: {
   text: string;
   style?: StyleProp<TextStyle>;
   numberOfLines?: number;
   ellipsizeMode?: TextProps['ellipsizeMode'];
+  adjustsFontSizeToFit?: boolean;
+  minimumFontScale?: number;
 }) {
   const reduced = useReducedMotion();
   const [shown, setShown] = useState(text);
@@ -79,8 +83,10 @@ export function SwapText({
       style={[textStyle(style), { opacity, transform: [{ translateY: offset }] }]}
       numberOfLines={numberOfLines}
       ellipsizeMode={ellipsizeMode}
+      adjustsFontSizeToFit={adjustsFontSizeToFit}
+      minimumFontScale={minimumFontScale}
     >
-      {shown}
+      {setChineseApart(shown, textStyle(style).fontFamily)}
     </Animated.Text>
   );
 }

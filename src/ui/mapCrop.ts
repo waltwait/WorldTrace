@@ -13,6 +13,16 @@ export interface Size {
   height: number;
 }
 
+/**
+ * The size to keep for the map. Only grows, for one width: the keyboard shrinks the
+ * window, and a map following it rebuilt its surface and redrew the fog each time it
+ * opened or closed, in the middle of whatever was animating over the top.
+ */
+export function steadySize(current: Size, next: Size): Size {
+  if (next.width !== current.width) return next;
+  return next.height > current.height ? next : current;
+}
+
 export function cropOffset(tile: Size, map: Size): { left: number; top: number } {
   return { left: (tile.width - map.width) / 2, top: (tile.height - map.height) / 2 };
 }

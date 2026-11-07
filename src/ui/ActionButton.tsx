@@ -1,23 +1,31 @@
 /**
  * A button that answers for what it does, in place.
  *
- * Tap it and it presses; while the work runs it shows a spinner; when the work
- * is done the label itself becomes what happened ("已上傳 · 3.2 MB") for a
- * moment and then goes back. The answer is on the thing that was touched, not
- * in a corner of the screen the eye has to go and find.
+ * Tap it and it presses; while the work runs it shows animated hopping dots (or
+ * a spinner); when the work is done the label itself becomes what happened
+ * ("已上傳 · 3.2 MB") for a moment and then goes back. The answer is on the
+ * thing that was touched, not in a corner of the screen the eye has to go and find.
  *
  * What the button shows when is decided in actionState.ts, which is tested; this
  * file only draws it.
  */
 
-import { useEffect, useMemo, useSyncExternalStore } from 'react';
-import { ActivityIndicator, StyleSheet, View } from 'react-native';
-import { buttonLabel, createActionState, runAction, type ActionResult } from './actionState';
+import { useEffect, useMemo, useRef, useSyncExternalStore } from 'react';
+import { ActivityIndicator, Animated, Easing, StyleSheet, View } from 'react-native';
+import {
+  buttonLabel,
+  createActionState,
+  runAction,
+  splitBusyEllipsis,
+  type ActionResult,
+} from './actionState';
 import { FadeIn } from './FadeIn';
 import { PressScale } from './PressScale';
 import { SwapText } from './SwapText';
 import { useStyles, useTheme } from './ThemeProvider';
 import { radius, type Theme } from './themes';
+import { useReducedMotion } from './useReducedMotion';
+import { Text } from './Text';
 
 type Variant = 'primary' | 'secondary' | 'row';
 
@@ -89,35 +97,102 @@ export function ActionButton({
   }
 
   const primary = variant === 'primary';
+  const { stem, dots } = busy ? splitBusyEllipsis(shown) : { stem: shown, dots: false };
 
   return (
     <PressScale
-      containerStyle={styles.grow}
       style={[primary ? styles.primary : styles.secondary, faded && styles.faded]}
       disabled={disabled || busy}
       onPress={tap}
     >
-      {busy ? (
+      {busy && !dots ? (
         <FadeIn offset={0} style={styles.spinner}>
           <ActivityIndicator size="small" color={primary ? '#FFFFFF' : t.ink} />
         </FadeIn>
       ) : null}
-      <SwapText
-        text={shown}
-        style={[
-          primary ? styles.primaryText : styles.secondaryText,
-          done && !primary && styles.confirmed,
-        ]}
-        numberOfLines={1}
-        ellipsizeMode="middle"
-      />
+      <View style={styles.labelRow}>
+        <SwapText
+          text={stem}
+          style={[
+            primary ? styles.primaryText : styles.secondaryText,
+            done && !primary && styles.confirmed,
+          ]}
+          numberOfLines={1}
+          ellipsizeMode="middle"
+        />
+        {dots ? <JumpingDots primary={primary} /> : null}
+      </View>
     </PressScale>
+  );
+}
+
+const DOT_LEAD_MS = [0, 130, 260] as const;
+const DOT_TAIL_MS = [390, 260, 130] as const;
+const DOT_HOP = -4;
+
+function JumpingDots({ primary }: { primary: boolean }) {
+  const styles = useStyles(make);
+  const reduced = useReducedMotion();
+  const d0 = useRef(new Animated.Value(0)).current;
+  const d1 = useRef(new Animated.Value(0)).current;
+  const d2 = useRef(new Animated.Value(0)).current;
+  const dots = useMemo(() => [d0, d1, d2], [d0, d1, d2]);
+
+  useEffect(() => {
+    if (reduced) {
+      for (const dot of dots) dot.setValue(0);
+      return;
+    }
+
+    const wave = Animated.loop(
+      Animated.parallel(
+        dots.map((dot, index) =>
+          Animated.sequence([
+            Animated.delay(DOT_LEAD_MS[index]),
+            Animated.timing(dot, {
+              toValue: DOT_HOP,
+              duration: 180,
+              easing: Easing.out(Easing.quad),
+              useNativeDriver: true,
+            }),
+            Animated.timing(dot, {
+              toValue: 0,
+              duration: 180,
+              easing: Easing.in(Easing.quad),
+              useNativeDriver: true,
+            }),
+            Animated.delay(DOT_TAIL_MS[index]),
+          ]),
+        ),
+      ),
+    );
+    wave.start();
+    return () => wave.stop();
+  }, [dots, reduced]);
+
+  return (
+    <View style={styles.dots}>
+      {dots.map((dot, index) => {
+        const opacity = dot.interpolate({
+          inputRange: [DOT_HOP, 0],
+          outputRange: [1, 0.45],
+          extrapolate: 'clamp',
+        });
+        return (
+          <Animated.View
+            key={index}
+            style={[styles.dotSlot, { opacity, transform: [{ translateY: dot }] }]}
+          >
+            <Text style={primary ? styles.primaryText : styles.secondaryText}>.</Text>
+          </Animated.View>
+        );
+      })}
+    </View>
   );
 }
 
 const make = (t: Theme) =>
   StyleSheet.create({
-    grow: { flexGrow: 1, flexBasis: 0 },
     faded: { opacity: 0.45 },
     confirmed: { color: t.ink, fontWeight: '700' },
 
@@ -139,6 +214,20 @@ const make = (t: Theme) =>
       justifyContent: 'center',
     },
     secondaryText: { color: t.ink, fontSize: 15, fontWeight: '700' },
+    labelRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      maxWidth: '100%',
+    },
+    dots: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      marginLeft: 2,
+    },
+    dotSlot: {
+      paddingHorizontal: 0.5,
+    },
 
     // Beside the label rather than in line with it, so the label does not shift
     // sideways when the spinner appears while SwapText flips to busyLabel.

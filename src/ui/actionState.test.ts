@@ -6,6 +6,7 @@ import {
   DONE_HOLD_MS,
   MIN_BUSY_MS,
   runAction,
+  splitBusyEllipsis,
   type ActionPhase,
   type ActionResult,
 } from './actionState';
@@ -382,5 +383,27 @@ describe('buttonLabel', () => {
         { label: '匯出完整備份', busyLabel: '打包中…', tickInText: false },
       ),
     ).toBe('已存到 WorldTrace · 1.2 MB');
+  });
+});
+
+describe('splitBusyEllipsis', () => {
+  test('strips a single-character ellipsis so animated dots can take its place', () => {
+    expect(splitBusyEllipsis('辨識中…')).toEqual({ stem: '辨識中', dots: true });
+    expect(splitBusyEllipsis('查詢 JX871…')).toEqual({ stem: '查詢 JX871', dots: true });
+  });
+
+  test('strips three ASCII dots the same way', () => {
+    expect(splitBusyEllipsis('辨識中...')).toEqual({ stem: '辨識中', dots: true });
+  });
+
+  test('leaves plain labels intact without animated dots', () => {
+    expect(splitBusyEllipsis('選擇截圖或照片')).toEqual({
+      stem: '選擇截圖或照片',
+      dots: false,
+    });
+    expect(splitBusyEllipsis('✓ 已辨識 JX871')).toEqual({
+      stem: '✓ 已辨識 JX871',
+      dots: false,
+    });
   });
 });

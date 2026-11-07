@@ -15,7 +15,7 @@ import {
 } from '@maplibre/maplibre-react-native';
 import type { StyleSpecification } from '@maplibre/maplibre-gl-style-spec';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { StyleSheet, useWindowDimensions, View } from 'react-native';
+import { Animated, Easing, StyleSheet, useWindowDimensions, View } from 'react-native';
 import type { TrackSegment } from '../export/gpx';
 import {
   buildFlightArcsGeoJson,
@@ -28,12 +28,13 @@ import type { FlightRecord } from '../flights/types';
 import { FadeIn } from './FadeIn';
 import { formatArea } from './format';
 import { Icon } from './Icon';
-import { DURATION } from './motion';
+import { CURVE, DURATION, pillOffset } from './motion';
 import { PressScale } from './PressScale';
 import { RollingNumber } from './RollingNumber';
 import { useStyles, useTheme } from './ThemeProvider';
 import { radius, SHARED, type Theme } from './themes';
 import { useFog } from './useFog';
+import { useReducedMotion } from './useReducedMotion';
 import type { RecorderState } from './useRecorder';
 import { Text } from './Text';
 
@@ -89,6 +90,8 @@ export interface FogMapProps {
 /** Frames a second for the map. The screen does 120, and the map needs nothing like it. */
 const MAP_FPS = 60;
 
+const LAYER_SLOT_WIDTH = 56;
+
 export const FogMap = memo(function FogMap({
   recorder,
   flights,
@@ -100,12 +103,32 @@ export const FogMap = memo(function FogMap({
 }: FogMapProps) {
   const t = useTheme();
   const styles = useStyles(make);
+  const reduced = useReducedMotion();
   const [layerMode, setLayerMode] = useState<LayerMode>('all');
   // The map mounts with the app and "view on map" can come before it has loaded:
   // a camera moved before that goes nowhere.
   const [mapReady, setMapReady] = useState(false);
   const cameraRef = useRef<CameraRef>(null);
   const { width, height } = useWindowDimensions();
+  const layerIndex = LAYERS.findIndex((l) => l.mode === layerMode);
+  const layerPill = useRef(new Animated.Value(pillOffset(layerIndex, LAYER_SLOT_WIDTH, 0))).current;
+
+  useEffect(() => {
+    const target = pillOffset(layerIndex, LAYER_SLOT_WIDTH, 0);
+    if (reduced) {
+      layerPill.setValue(target);
+      return;
+    }
+
+    const animation = Animated.timing(layerPill, {
+      toValue: target,
+      duration: DURATION.enter,
+      easing: Easing.bezier(...CURVE.move),
+      useNativeDriver: true,
+    });
+    animation.start();
+    return () => animation.stop();
+  }, [layerIndex, layerPill, reduced]);
 
   useEffect(() => {
     if (!focusedFlight || !mapReady) return;
@@ -259,24 +282,24 @@ export const FogMap = memo(function FogMap({
         <>
           <MapCredit expanded />
 
-          <View style={styles.top}>
+          <FadeIn offset={-12} style={styles.top}>
             <PressScale style={styles.back} onPress={onCollapse} label="返回" hitSlop={8}>
               <Icon name="back" color="#FFFFFF" />
             </PressScale>
             <View style={styles.layers}>
+              <Animated.View
+                pointerEvents="none"
+                style={[styles.layerIndicator, { transform: [{ translateX: layerPill }] }]}
+              />
               {LAYERS.map(({ mode, label }) => (
-                <PressScale
-                  key={mode}
-                  style={[styles.layer, layerMode === mode && styles.layerOn]}
-                  onPress={() => setLayerMode(mode)}
-                >
+                <PressScale key={mode} style={styles.layer} onPress={() => setLayerMode(mode)}>
                   <Text style={[styles.layerText, layerMode === mode && styles.layerTextOn]}>
                     {label}
                   </Text>
                 </PressScale>
               ))}
             </View>
-          </View>
+          </FadeIn>
 
           {banner ? (
             // Delayed past the map opening: one thing moves at a time.
@@ -287,7 +310,7 @@ export const FogMap = memo(function FogMap({
             </FadeIn>
           ) : null}
 
-          <View style={styles.bottom}>
+          <FadeIn offset={16} style={styles.bottom}>
             <RollingNumber
               value={recorder.exploredSquareMeters}
               format={formatArea}
@@ -295,8 +318,8 @@ export const FogMap = memo(function FogMap({
               style={styles.area}
               fit
             />
-            <RecordingStatus recorder={recorder} />
-          </View>
+            <RecordingStatus recorder={recorder} pulsing={active} />
+          </FadeIn>
         </>
       ) : null}
     </View>
@@ -313,13 +336,53 @@ export function MapCredit({ expanded }: { expanded: boolean }) {
   );
 }
 
-export function RecordingStatus({ recorder }: { recorder: RecorderState }) {
+function LiveDot({ pulsing }: { pulsing: boolean }) {
+  const styles = useStyles(make);
+  const reduced = useReducedMotion();
+  const opacity = useRef(new Animated.Value(1)).current;
+
+  useEffect(() => {
+    if (!pulsing || reduced) {
+      opacity.setValue(1);
+      return;
+    }
+
+    const pulse = Animated.loop(
+      Animated.sequence([
+        Animated.timing(opacity, {
+          toValue: 0.4,
+          duration: 1200,
+          easing: Easing.inOut(Easing.sin),
+          useNativeDriver: true,
+        }),
+        Animated.timing(opacity, {
+          toValue: 1,
+          duration: 1200,
+          easing: Easing.inOut(Easing.sin),
+          useNativeDriver: true,
+        }),
+      ]),
+    );
+    pulse.start();
+    return () => pulse.stop();
+  }, [opacity, pulsing, reduced]);
+
+  return <Animated.View style={[styles.liveDot, { opacity }]} />;
+}
+
+export function RecordingStatus({
+  recorder,
+  pulsing = false,
+}: {
+  recorder: RecorderState;
+  pulsing?: boolean;
+}) {
   const styles = useStyles(make);
 
   if (recorder.status === 'recording') {
     return (
       <View style={styles.status}>
-        <View style={styles.liveDot} />
+        <LiveDot pulsing={pulsing} />
         <Text style={styles.statusText}>記錄中</Text>
       </View>
     );
@@ -381,8 +444,22 @@ const make = (t: Theme) =>
       justifyContent: 'center',
     },
     layers: { flexDirection: 'row', padding: 4, borderRadius: radius.round, backgroundColor: t.ink },
-    layer: { height: 40, paddingHorizontal: 14, borderRadius: 20, justifyContent: 'center' },
-    layerOn: { backgroundColor: t.accent },
+    layerIndicator: {
+      position: 'absolute',
+      left: 4,
+      top: 4,
+      width: LAYER_SLOT_WIDTH,
+      height: 40,
+      borderRadius: 20,
+      backgroundColor: t.accent,
+    },
+    layer: {
+      width: LAYER_SLOT_WIDTH,
+      height: 40,
+      borderRadius: 20,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
     layerText: { color: '#FFFFFF', fontSize: 14, fontWeight: '700' },
     layerTextOn: { color: t.ink },
 
