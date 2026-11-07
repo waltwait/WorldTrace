@@ -53,17 +53,20 @@ src/places/      reverse geocoding, a few tiles per launch
 src/flights/     flights, kept apart from the track: the add form (flightForm),
                  airport-local time (zonedTime), reading a ticket on the phone
                  (readTicket, ticketFacts), lookup and status polling
-                 (flightStatusApi), great-circle arcs, passport stats
+                 (flightStatusApi), great-circle arcs, passport stats,
+                 trips and their links (trips, tripLinks)
 src/settings/    API keys: entered on the settings page, kept in the Keystore
 src/ui/          screens, themes, formatting, the app's own dialog
 ```
 
-Four pages under a floating toolbar, 總覽, 足跡, 航班, 設定, with ＋ for a new
+Three pages under a floating toolbar, 總覽, 航班, 設定, with ＋ for a new
 flight on any of them (`ui/Toolbar.tsx`). They sit in a horizontal `ScrollView` in
 `App.tsx`, so a swipe follows the finger on the UI thread even while the fog holds
 the JS thread; `ui/pager.ts` says which page a position is. What opens over them:
-探索 from the numbers on 總覽, 飛行護照 from its card on 總覽, a flight's detail, and
-the add sheet. Backup, restore, export and redrawing the fog are all
+探索 from the numbers on 總覽, and 足跡, every day walked, from a row in 探索 (it was
+a page of its own; the user moved it in with the rest of the walking); 飛行護照 from
+its card on 總覽, a flight's detail, and the add sheet. A day chosen in 足跡 closes
+both and shows that day on the map. Backup, restore, export and redrawing the fog are all
 in 設定.
 
 **The ports pattern is what keeps this testable.** `SqlDriver`
@@ -228,6 +231,15 @@ quietly wrong.
   the same goes for anything else from `expo-modules-core`'s `SharedObject`.
 - **MapLibre RN v11 defaults Android to GLSurfaceView**, which renders the map
   mirrored on this device. Use `androidView="texture"`.
+- **Expo's `ActivityResultLauncher` contracts drop across Bridgeless cold start
+  and overlapping `MainActivity` replacements.** `ImagePicker.launchImageLibraryAsync`
+  throws `Attempting to launch an unregistered ActivityResultLauncher` when
+  `MainActivity.onResume()` runs before `AppContext` finishes initialising on the
+  `ReactInstance` thread, or when an older `MainActivity.onDestroy()` unregisters
+  contracts after a newer `MainActivity` has already resumed. `MainActivity.kt`
+  and `MainApplication.kt` re-dispatch `onHostResume` in both cases, and
+  `flights/pickTicketImage.ts` falls back to `DocumentPicker` if a launcher is
+  still missing.
 - **`src/app/` collides with Expo Router's convention.** Hence `src/ui/`.
 - **The adaptive icon's monochrome layer is a mask.** Android throws its colours
   away and uses only its alpha, filled with the wallpaper's theme colour. A
@@ -252,17 +264,36 @@ quietly wrong.
   and leaves gate, terminal, seat and cabin empty when nobody gave them; the
   first version of the sheet made all of those up. Ticket times are local to
   their airport (`flights/zonedTime.ts`), never the phone's zone.
-- A clock never finishes a flight. Only the status API saying Arrived, the user
-  marking it, or typing in a trip already over does: `syncFlightStatus` hands
-  back the same flight when nothing comes back, and polling stops a day past the
-  scheduled arrival. It used to work a status out from the time, which landed
-  cancelled and missed flights and stamped them into the passport.
+- A flight is over once it has left, by its estimated departure if it has one, unless
+  it was cancelled: the user's decision, in place of a button (`settleDeparted`). It is
+  worked out on reading in `ui/useFlights.ts` and never stored, so `is_finished` means
+  only that the API said Arrived or the trip was typed in already over. Polling goes by
+  that, and stops a day past the scheduled arrival, so a cancellation found after the
+  departure time still takes the flight out of the passport. What this gives up: a
+  flight missed, or cancelled with no poll to say so, gets stamped. Deleting it is the
+  way out. `syncFlightStatus` itself still learns nothing from the clock.
 - A ticket gives three things and no more: flight number, date and time, seat
-  (`flights/ticketFacts.ts`). The status API supplies the rest. Text recognition
+  (`flights/ticketFacts.ts`). The places printed on it are noted as well, only to pick
+  which leg of a number like D7 378 (KUL-TPE-KIX) was flown, and only while the sheet
+  is open: never saved, shown or sent, the user's call. Lines that look like a name
+  or carry a booking code or ticket number are skipped. The status API supplies the rest. Text recognition
   runs on the phone, and the picture and any turned copy are deleted once read
   (`flights/readTicket.ts`): nothing is uploaded, and the booking code, the name
   and the barcode, which holds both, are never read or kept. A booking code is
   not stored or shown anywhere.
+- A flight's status is updated by pulling its detail page down, which asks whatever
+  the polling schedule says and costs 2 units. Not offered on a flight that is over.
+  Pulling the 航班 list only polls what the schedule says is due.
+- An hour before a flight still without a seat, a notification says to photograph the
+  boarding pass (`flights/reminders.ts`, set by `flights/expoReminders.ts` whenever the
+  flights change). Tapping it opens the flight and asks for the photo at once, once the
+  page has slid in. Reading a pass is offered only from an hour before departure until
+  landing, by the estimated times when there are any (`boardingPassOpen`); outside that
+  the seat is typed by hand. The pass updates the seat only if it is for that flight
+  (`flights/seatFromTicket.ts`), and is deleted once read. No exact-alarm permission:
+  Android may move the reminder by a few minutes.
+- A flight is deleted by a long press on its ticket on 航班. Not by a swipe: a swipe
+  changes page.
 - Flights are stored by where each thing came from, in three tables
   (`store/flightSchema.ts`): `flights` what the user confirmed, `flight_schedule`
   the timetable with a `source` of `api` or `user`, `flight_status` what changes.
@@ -270,9 +301,12 @@ quietly wrong.
   is looked up by number and date however it was entered; the airports, times and
   zones are typed by hand only when nothing was found.
 - The API answers for dates within a year either way, on every plan, and refuses
-  the rest with a 400. An older flight is looked up on the same weekday near the same
-  date this year, then that date, then the last such weekday (`flights/flightLookup.ts`),
-  and moved onto its own date, for the route, country and distance a passport needs.
+  the rest with a 400. An older flight is looked up on a day it is known to have flown,
+  when the API's list of its dates says, and otherwise on the same weekday near the same
+  date this year, then that date, the last such weekday, the first one the API can reach
+  and one half a year back (`flights/flightLookup.ts`): TR898 stopped flying in March
+  2026, and only the oldest of those found it. Each try costs 2 units. What is found is
+  moved onto its own date, for the route, country and distance a passport needs.
   Its times are another day's, so its `source` is `nearby`, the detail page says so,
   and the form says so before it is saved. The one exception to a flight carrying only
   what was typed or read, and the user's call: a number may have changed route since.
@@ -337,9 +371,55 @@ quietly wrong.
 - 飛行護照 (`ui/PassportScreen.tsx`) counts flights flown and nothing else, the
   same as the fog, and everything it says comes from `flights/flightStats.ts`.
   Years go by the date on the ticket, not UTC. It stays about flying: 探索 is
-  about walking.
+  about walking. Its cover holds the totals, the flags of the countries visited in the
+  stamps' order, and the counts of airports, airlines and routes; there is no count of
+  countries, and no laps of the Earth: the flags took their place. The card on 總覽 carries them in
+  its title row, seven at most, the last place saying how many more (`ui/flagRow.ts`).
+  Its rankings list everything: a count of eight above a list cut to five read as a
+  wrong count.
+- The passport shows each trip as a block (`ui/TripCard.tsx`, `flights/trips.ts`),
+  by the countries rule: named for the countries visited, connections and home left
+  out, with its dates, a route line (`routeChain`: solid for a flight, dashed for the
+  ground between two airports) and a small ticket per flight. A year holds the trips
+  that began in it, each whole: a trip over New Year is not cut in two. A block shows
+  its head and route line folded; a tap opens it out to its tickets and 旅程頁, the
+  trip's own page (`ui/TripScreen.tsx`); a ticket opens its flight.
+- Under the cover the passport is three pages side by side, 旅程, 國家 and 排行, swiped
+  or chosen by name. The names follow the finger: each grows and darkens as its page
+  slides in (`ui/SectionTabs.tsx`, `tabMotion`), drawn at full size and scaled on the
+  native driver, since a font size cannot be animated there. The pager takes the
+  height of the page showing. The year is chosen from a list rising from the bottom
+  (`ui/YearPicker.tsx`, `yearChoices`), opened by the button in the header: ALL, then
+  each year a trip began in, the newest first, with the flights it holds.
+- A trip's links are kept on a flight (`flight_links`), the trip's first when added,
+  because nothing stores a trip: a flight added later can join or split trips, and the
+  links follow their flights. Deleting a flight hands them to the first flight of its
+  trip left (`linkHeir`), or they go with it. Only web addresses get in
+  (`flights/tripLinks.ts`), since a tap opens them in whatever the phone opens them
+  with; the app never fetches one. A link is deleted by a long press, like a flight.
+  Only flown trips are in the passport, so a trip still to come has nowhere to keep
+  links yet.
 - Dates are chosen from the app's own calendar (`ui/DateField.tsx`,
   `ui/calendar.ts`), not typed and not the system's picker, so it takes the theme.
+- The country flights leave from is chosen on 設定 and gets no stamp and no count in
+  the passport (`settings/homeCountry.ts`), though its flights still count as flying.
+  It is kept in `home-country.json` beside the database, like the theme, and offers
+  only countries flights touch. Passport totals are whole kilometres
+  (`formatWholeKm`): they are rounded, and `.00` claimed otherwise.
+- A trip or a year can be shared as a picture (`ui/ShareCardSheet.tsx`,
+  `flights/shareCard.ts`). Its map is the arcs over the world's coastlines
+  (`flights/land.ts`, made by `tools/make-land.mjs` from world-atlas@2 land-50m,
+  Natural Earth), never the fog map: that shows where the user lives. Without the land
+  nobody could tell where an arc went.
+- Trips are worked out, in three layers, the user's rule. A route counts each flight.
+  An airport counts once a trip, a trip joining only at the airport the last flight
+  reached (`tripsOf`): in at Tokyo and out at Osaka is TPE 2, NRT 1, KIX 1. A country
+  counts once a trip, a trip joining at the country too (`journeysOf`): that is one
+  trip to Japan. A trip ends on coming home, to the home country if one is set and
+  however long it took; without one, home is where the trip began and a stay over 30
+  days ends it. A stop of 24 hours or less on the way somewhere else is a connection,
+  not a visit: no stamp, though its airport and route still count. Flown back the way
+  it came, it was the destination, however short.
 - Tickets are read from pictures only. There is no pasting of text: the user took
   it out.
 - Exports can be shared or saved to a folder (`export/saveToFolder.ts`). Android
@@ -357,6 +437,14 @@ quietly wrong.
   with injected timers: busy only after 120 ms (a faster action would just
   flash), kept up 400 ms once shown, a confirmation held 2.2 s. A failure is
   reported by a dialog, never by the button.
+- A full-screen page has its way out in `ui/SheetHeader.tsx`, outside what scrolls, so
+  it stays on the screen. A test reads the source of each page for it.
+- A sheet closes first and the work follows (`ui/afterClose.ts`): updating every page
+  and clearing the form as the slide began made it start late, with the form emptying
+  on its way out.
+- The keyboard must not reach the map. `adjustResize` shrinks the window, so the map's
+  size only grows (`steadySize`): following it rebuilt the surface and redrew the fog
+  each time the keyboard opened or closed.
 - Motion is `transform` and `opacity` on the native driver, and nothing else
   (`PressScale`, `SwapText`). Redrawing the fog holds the JS thread for seconds,
   and anything driven from JS freezes mid-press while it runs. `RollingNumber`
@@ -403,6 +491,11 @@ quietly wrong.
   ML Kit here reads Latin script only, so 「12月31日」 may not be read. The fields the code reads all appear in
   the published OpenAPI (doc.aerodatabox.com), which says what may come back, not
   what does for a given airport.
+- A boarding pass once came out dated 5/31 from a photo with the edge of a second
+  ticket in it. It did not happen again and the cause was never seen; the likely one
+  is the other ticket's date read as `1 JUN`, a day before which the lookup then took.
+  The lookup no longer goes a day early. A date joined to another flight's number can
+  still be taken for this one's.
 - A status poll that gets no answer is not stamped as synced, so a flight the API
   has nothing on is asked about again on every launch. The free plan is 400 units
   a month and this endpoint costs 2, so 200 calls: enough for normal use, but a
