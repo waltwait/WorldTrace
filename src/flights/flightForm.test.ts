@@ -6,6 +6,8 @@ import {
   EMPTY_FLIGHT_FORM,
   formFromTicket,
   legsFoundMessage,
+  withLeg,
+  ticketBusyLabel,
   type FlightForm,
 } from './flightForm';
 import type { TicketFacts } from './ticketFacts';
@@ -348,5 +350,115 @@ describe('cleanFlightNumber', () => {
 
   test('leaves something to look up', () => {
     expect(cleanFlightNumber('CI000')).toBe('CI0');
+  });
+});
+
+describe('ticketBusyLabel', () => {
+  test('stays silent while the photo picker is still open', () => {
+    expect(ticketBusyLabel(null)).toBeUndefined();
+  });
+
+  test('says it is reading while OCR runs on the picture', () => {
+    expect(ticketBusyLabel({ step: 'reading' })).toBe('辨識中…');
+  });
+
+  test('names the flight once OCR hands over to the timetable lookup', () => {
+    expect(ticketBusyLabel({ step: 'lookingUp', flightNumber: 'JX871' })).toBe('查詢 JX871…');
+  });
+});
+
+// One number, two legs: D7 378 flies Kuala Lumpur to Taipei, then on to Osaka. The
+// ticket may give no time to choose by, so the user chooses.
+describe('withLeg', () => {
+  const onward: LookedUpFlight = {
+    ...oka,
+    depIata: 'TPE',
+    arrIata: 'KIX',
+    depTz: 'Asia/Taipei',
+    arrTz: 'Asia/Tokyo',
+    depScheduledUtc: Date.UTC(2027, 2, 3, 10, 30),
+    arrScheduledUtc: Date.UTC(2027, 2, 3, 13, 30),
+  };
+  const looked = form({ flightNumber: 'JX871', depDate: '2027-03-03', seat: '12A', notes: '靠窗', lookedUp: oka });
+
+  test('takes the leg chosen', () => {
+    expect(withLeg(looked, onward).lookedUp).toBe(onward);
+  });
+
+  test('shows its date and time on its own airport\'s clocks', () => {
+    const chosen = withLeg(looked, onward);
+
+    expect([chosen.depDate, chosen.depTime]).toEqual(['2027-03-03', '18:30']);
+  });
+
+  test('keeps what the user gave', () => {
+    const chosen = withLeg(looked, onward);
+
+    expect([chosen.seat, chosen.notes]).toEqual(['12A', '靠窗']);
+  });
+
+  test('saves as that leg', () => {
+    const flight = built(withLeg(looked, onward));
+
+    expect([flight.depIata, flight.arrIata]).toEqual(['TPE', 'KIX']);
+  });
+});
+
+describe('choosing a leg by the places on the ticket', () => {
+  const first: LookedUpFlight = {
+    ...oka,
+    flightNumber: 'D7378',
+    depIata: 'KUL',
+    arrIata: 'TPE',
+    depCity: 'Kuala Lumpur',
+    arrCity: 'Taipei',
+    depTz: 'Asia/Kuala_Lumpur',
+    arrTz: 'Asia/Taipei',
+    depScheduledUtc: Date.UTC(2027, 2, 3, 1, 0),
+    arrScheduledUtc: Date.UTC(2027, 2, 3, 5, 30),
+  };
+  const onward: LookedUpFlight = {
+    ...first,
+    depIata: 'TPE',
+    arrIata: 'KIX',
+    depCity: 'Taipei',
+    arrCity: 'Osaka',
+    depTz: 'Asia/Taipei',
+    arrTz: 'Asia/Tokyo',
+    depScheduledUtc: Date.UTC(2027, 2, 3, 6, 40),
+    arrScheduledUtc: Date.UTC(2027, 2, 3, 9, 40),
+  };
+  const read = (places: string[], time: string | null = null): TicketFacts => ({
+    flightNumber: 'D7378',
+    date: '2027-03-03',
+    time,
+    seat: null,
+    yearGuessed: false,
+    places,
+  });
+  const chosen = (ticket: TicketFacts, legs = [first, onward]) =>
+    formFromTicket(ticket, legs, EMPTY_FLIGHT_FORM).lookedUp?.depIata;
+
+  test('takes the leg both of whose airports the ticket prints', () => {
+    expect(chosen(read(['TPE', 'KIX']))).toBe('TPE');
+  });
+
+  test('knows the airports by their cities too', () => {
+    expect(chosen(read(['TAIPEI', 'OSAKA', 'KANSAI']))).toBe('TPE');
+  });
+
+  test('knows a city written as one word', () => {
+    const hongKong = { ...onward, arrIata: 'HKG', arrCity: 'Hong Kong' };
+
+    expect(chosen(read(['TAIPEI', 'HONGKONG']), [first, hongKong])).toBe('TPE');
+  });
+
+  test('goes by the time first, when the ticket has one that fits', () => {
+    expect(chosen(read(['TPE', 'KIX'], '09:00'))).toBe('KUL');
+  });
+
+  test('takes the first when nothing tells them apart', () => {
+    expect(chosen(read([]))).toBe('KUL');
+    expect(chosen(read(['TPE']))).toBe('KUL');
   });
 });

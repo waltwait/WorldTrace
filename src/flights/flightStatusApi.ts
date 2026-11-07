@@ -35,6 +35,8 @@ export interface FlightStatusPort {
 export interface FlightLookupPort {
   /** Every leg that number flies on that day at its origin; none if unknown. */
   findFlights(flightNumber: string, dateLocal: string): Promise<LookedUpFlight[]>;
+  /** The local dates that number has flown on, as far as the API will say; null if not. */
+  flightDates?(flightNumber: string): Promise<string[] | null>;
 }
 
 /**
@@ -49,8 +51,16 @@ const STOP_POLLING_AFTER_ARRIVAL_MS = 24 * 3600 * 1000;
 const REQUEST_TIMEOUT_MS = 15_000;
 
 /**
+ * A flight whose schedule was borrowed from another day or typed by hand is one
+ * the API had no timetable for on its own date. Live feeds only start near
+ * departure, so polling months ahead would get 204 on every launch and spend
+ * quota without ever stamping `lastSyncedAt`.
+ */
+const POLL_UNFILED_WITHIN_MS = 7 * 24 * 3600 * 1000;
+
+/**
  * Determines whether a flight is due for a status poll based on its tiered schedule.
- * - > 48h before departure: every 24 hours
+ * - > 48h before departure: every 24 hours (only within 7d if scheduleSource !== 'api')
  * - 24h ~ 48h before departure: every 4 hours
  * - 6h ~ 24h before departure: every 2 hours
  * - < 6h before departure up to landing: every 15 minutes
@@ -65,11 +75,15 @@ export function shouldPollFlight(flight: FlightRecord, nowMs: number = Date.now(
     return false;
   }
 
+  const msUntilDep = flight.depScheduledUtc - nowMs;
+  if (flight.scheduleSource !== 'api' && msUntilDep > POLL_UNFILED_WITHIN_MS) {
+    return false;
+  }
+
   if (flight.lastSyncedAt === null || flight.lastSyncedAt === undefined) {
     return true;
   }
 
-  const msUntilDep = flight.depScheduledUtc - nowMs;
   const msSinceLastSync = nowMs - flight.lastSyncedAt;
 
   if (msUntilDep > 48 * 3600 * 1000) {
@@ -255,19 +269,16 @@ function toLookedUpFlight(leg: AeroDataBoxLeg, flightNumber: string): LookedUpFl
 export function createAeroDataBoxPort(
   apiKey?: string,
   fetchFn: typeof fetch = fetch,
-): FlightStatusPort & FlightLookupPort {
-  /** The legs for that number and date, or null for no answer. Never throws. */
-  async function fetchLegs(flightNumber: string, dateLocal: string): Promise<AeroDataBoxLeg[] | null> {
+): FlightStatusPort & Required<FlightLookupPort> {
+  /** The answer to a request, or null for none. Never throws. */
+  async function request(path: string): Promise<unknown> {
     if (!apiKey) return null;
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
     try {
-      const cleanNum = cleanFlightNumber(flightNumber);
-      const url = `https://aerodatabox.p.rapidapi.com/flights/number/${encodeURIComponent(cleanNum)}/${dateLocal}`;
-
-      const res = await fetchFn(url, {
+      const res = await fetchFn(`https://aerodatabox.p.rapidapi.com${path}`, {
         signal: controller.signal,
         headers: {
           'X-RapidAPI-Key': apiKey,
@@ -281,13 +292,29 @@ export function createAeroDataBoxPort(
         return null;
       }
 
-      const data = (await res.json()) as AeroDataBoxLeg | AeroDataBoxLeg[];
-      return Array.isArray(data) ? data : [data];
+      // 204, nothing known, has no body to read; returning [] tells an empty
+      // schedule apart from a failed request (null).
+      if (res.status === 204) return [];
+      return await res.json();
     } catch {
       return null;
     } finally {
       clearTimeout(timeout);
     }
+  }
+
+  const numberPath = (flightNumber: string) =>
+    `/flights/number/${encodeURIComponent(cleanFlightNumber(flightNumber))}`;
+
+  /** The legs for that number and date, or null for no answer. */
+  async function fetchLegs(flightNumber: string, dateLocal: string): Promise<AeroDataBoxLeg[] | null> {
+    // Departure, or a flight landing after midnight answers for the day before too,
+    // and comes first: a search for the 12th gave the 11th, and a poll that flight's gate.
+    const data = (await request(
+      `${numberPath(flightNumber)}/${dateLocal}?dateLocalRole=Departure`,
+    )) as AeroDataBoxLeg | AeroDataBoxLeg[] | null;
+    if (!data) return null;
+    return Array.isArray(data) ? data : [data];
   }
 
   return {
@@ -313,6 +340,11 @@ export function createAeroDataBoxPort(
         // Only an arrival finishes a flight; anything else leaves it as it was.
         isFinished: status === 'LANDED' ? true : undefined,
       };
+    },
+
+    async flightDates(flightNumber) {
+      const data = await request(`${numberPath(flightNumber)}/dates`);
+      return Array.isArray(data) && data.every((d) => typeof d === 'string') ? data : null;
     },
 
     async findFlights(flightNumber, dateLocal) {

@@ -108,11 +108,13 @@ describe('a boarding pass photo', () => {
 });
 
 // The point of reading this way: nothing else comes out of a ticket.
-test('carries nothing but the flight, date, time and seat', () => {
+// The places are the one addition, to choose a leg, and they are never saved.
+test('carries nothing but the flight, date, time, seat and places', () => {
   const [ticket] = extractTickets(MAIL, NOW);
   expect(Object.keys(ticket).sort()).toEqual([
     'date',
     'flightNumber',
+    'places',
     'seat',
     'time',
     'yearGuessed',
@@ -143,7 +145,7 @@ describe('several flights on one ticket', () => {
   ];
 
   test('are each given their own date, time and seat', () => {
-    expect(extractTickets(ROUND_TRIP, NOW)).toEqual([
+    expect(extractTickets(ROUND_TRIP, NOW).map(({ places: _places, ...facts }) => facts)).toEqual([
       { flightNumber: 'BR198', date: '2027-03-03', time: '08:50', seat: '24A', yearGuessed: false },
       { flightNumber: 'BR197', date: '2027-03-13', time: '14:20', seat: '31C', yearGuessed: false },
     ]);
@@ -258,7 +260,7 @@ describe('how a date can be written', () => {
   });
 
   test('a flight with no date anywhere keeps its number', () => {
-    expect(extractTickets(['BR198'], NOW)).toEqual([
+    expect(extractTickets(['BR198'], NOW).map(({ places: _places, ...facts }) => facts)).toEqual([
       { flightNumber: 'BR198', date: null, time: null, seat: null, yearGuessed: false },
     ]);
   });
@@ -390,5 +392,308 @@ describe('a flight number with its zero read as the letter O', () => {
 
   test('needs a digit, or any word beside a date would do', () => {
     expect(extractTickets(['GOOOO/14JUN'], NOW)).toEqual([]);
+  });
+});
+
+// A boarding pass that heads its departure with one word, and prints its boarding
+// time in the same form. Recognition's blocks come back in no order to rely on.
+describe('a boarding pass that says only DEPARTURE', () => {
+  const PASS = [
+    'FLIGHT\nCX198',
+    'BOARDING TIME\n22:15',
+    'DATE\n14 JUN',
+    'DEPARTURE\n22:50',
+    'SEAT\n12C',
+    'PLEASE BE AT THE BOARDING GATE 35 MINS PRIOR TO DEPARTURE.',
+  ];
+
+  test('gives the departure, not the boarding time', () => {
+    expect(extractTickets(PASS, NOW)[0].time).toBe('22:50');
+  });
+
+  test('gives it with the two times the other way round', () => {
+    const swapped = ['FLIGHT\nCX198', 'DATE\n14 JUN', '22:50', 'DEPARTURE', '22:15', 'BOARDING TIME'];
+
+    expect(extractTickets(swapped, NOW)[0].time).toBe('22:50');
+  });
+
+  test('gives it with the times read apart from their labels', () => {
+    const apart = ['CX198', '14 JUN', 'BOARDING TIME', 'DEPARTURE', '22:15', '22:50'];
+
+    expect(extractTickets(apart, NOW)[0].time).toBe('22:50');
+  });
+
+  test('knows boarding comes first across midnight', () => {
+    const late = ['CX198', '14 JUN', 'BOARDING TIME\n23:50', 'DEPARTURE\n00:20'];
+
+    expect(extractTickets(late, NOW)[0].time).toBe('00:20');
+  });
+
+  // The word in a sentence is not a label, and the one time here is boarding.
+  test('takes nothing from the small print', () => {
+    const noLabel = ['CX198', '14 JUN', 'BOARDING TIME\n22:15', 'GATE CLOSES BEFORE DEPARTURE.'];
+
+    expect(extractTickets(noLabel, NOW)[0].time).toBeNull();
+  });
+
+  test('needs the word as a label, even with two times to choose from', () => {
+    const sentence = ['CX198', '14 JUN', '22:15', '22:50', 'GATE CLOSES BEFORE DEPARTURE.'];
+
+    expect(extractTickets(sentence, NOW)[0].time).toBeNull();
+  });
+
+  // Hours apart, these are not a boarding time and its flight.
+  test('takes nothing from two times with nothing to do with each other', () => {
+    const unrelated = ['CX198', '14 JUN', 'DEPARTURE', '08:10', '22:50'];
+
+    expect(extractTickets(unrelated, NOW)[0].time).toBeNull();
+  });
+});
+
+// A pass that labels in two languages and lays the labels out as one column and the
+// values as another, as recognition reads them: three labels, then three values.
+describe('a pass that says DEP TIME, with its values in a column of their own', () => {
+  const COLUMNS = [
+    'BOARDING PASS',
+    'HX198',
+    'DEP TIME',
+    'GATE',
+    'SEAT',
+    '0925',
+    '208',
+    '22H',
+    '14JUN SAPPORO CHITOSE',
+  ];
+
+  test('finds the departure', () => {
+    expect(extractTickets(COLUMNS, NOW)[0].time).toBe('09:25');
+  });
+
+  test('finds it with the label read as one word', () => {
+    const joined = COLUMNS.map((line) => (line === 'DEP TIME' ? 'DEPTIME' : line));
+
+    expect(extractTickets(joined, NOW)[0].time).toBe('09:25');
+  });
+
+  test('still reads the rest', () => {
+    expect(extractTickets(COLUMNS, NOW)[0]).toMatchObject({
+      flightNumber: 'HX198',
+      date: '2026-06-14',
+      seat: '22H',
+    });
+  });
+
+  // Another time's label in between means the next time is that one's.
+  test('stops at the next label that is a time', () => {
+    const boarding = ['HX198', '14JUN', 'DEP TIME', 'BOARDING TIME', '0855', 'SEAT'];
+
+    expect(extractTickets(boarding, NOW)[0].time).toBeNull();
+  });
+});
+
+// As ML Kit read a Hong Kong Airlines pass on the phone. The form's printed version,
+// V1 2017, came first and passes for a flight; the real number came last.
+describe('a pass with a form version printed on it', () => {
+  const READ = [
+    'V1 2017',
+    '144 V',
+    'SEAT',
+    '22C',
+    'GATE',
+    'C10',
+    'DEP TIME',
+    '2140',
+    '14JUN HONGKONG',
+    'HX 198',
+  ];
+
+  test('is the flight, not the version', () => {
+    expect(extractTickets(READ, NOW).map((t) => t.flightNumber)).toEqual(['HX198']);
+  });
+
+  test('keeps the date, time and seat', () => {
+    expect(extractTickets(READ, NOW)[0]).toMatchObject({
+      date: '2026-06-14',
+      time: '21:40',
+      seat: '22C',
+    });
+  });
+
+  test('is the flight with the version read as one word', () => {
+    const joined = READ.map((line) => (line === 'V1 2017' ? 'V12017' : line));
+
+    expect(extractTickets(joined, NOW).map((t) => t.flightNumber)).toEqual(['HX198']);
+  });
+
+  // A number that could be a year is only a flight when it is printed like one.
+  test('keeps a real flight numbered like a year', () => {
+    expect(extractTickets(['CI2017', '14JUN'], NOW).map((t) => t.flightNumber)).toEqual(['CI2017']);
+    expect(extractTickets(['CI 2017', '14JUN'], NOW).map((t) => t.flightNumber)).toEqual(['CI2017']);
+  });
+
+  test('keeps a flight whose code has a digit, numbered otherwise', () => {
+    expect(extractTickets(['5J 560', '14JUN'], NOW).map((t) => t.flightNumber)).toEqual(['5J560']);
+  });
+});
+
+// Only to tell the legs of one number apart, D7 378 KUL-TPE-KIX: never saved or shown.
+describe('the places on a ticket', () => {
+  const PASS = ['BOARDING PASS', 'D7 378', '14JUN', 'TAIPEI', 'OSAKA KANSAI', 'TPE KIX', 'SEAT 22C'];
+  const places = (lines: string[]) => extractTickets(lines, NOW)[0].places ?? [];
+
+  test('are noted, codes and names alike', () => {
+    expect(places(PASS)).toEqual(expect.arrayContaining(['TPE', 'KIX', 'TAIPEI', 'OSAKA', 'KANSAI']));
+  });
+
+  test('leave out a name, however it is written', () => {
+    const named = [...PASS, 'LEE/AMYMS', 'LEE, AMY MS'];
+
+    expect(places(named)).not.toEqual(expect.arrayContaining(['LEE']));
+    expect(places(named)).not.toContain('AMYMS');
+    expect(places(named)).not.toContain('AMY');
+  });
+
+  test('leave out a booking code and a ticket number', () => {
+    const coded = [...PASS, 'Booking reference: QZKMXA', 'ETKT TICKET NUMBER ABCDEF'];
+
+    expect(places(coded)).not.toContain('QZKMXA');
+    expect(places(coded)).not.toContain('ABCDEF');
+    expect(places(coded)).not.toContain('BOOKING');
+  });
+
+  test('keep an airport printed with a number', () => {
+    expect(places([...PASS, 'SDJ/005'])).toContain('SDJ');
+  });
+});
+
+// As ML Kit read a Jetstar pass: a two-digit number, its label read with a space and
+// the l as a 1, beside a gate, a baggage code and a booking code all of that shape.
+describe('a two-digit flight number', () => {
+  const READ = [
+    'STRT, BG30, TIG',
+    '14: 45',
+    '26',
+    'QQV18V',
+    'Gate:',
+    'Date: 14Jun 25',
+    'Seat: 3E',
+    'F1 ight: GK 98',
+    'FLT: GK 98',
+  ];
+
+  test('is read from its label', () => {
+    expect(extractTickets(READ, NOW).map((t) => t.flightNumber)).toEqual(['GK98']);
+  });
+
+  test('keeps the rest of the ticket', () => {
+    expect(extractTickets(READ, NOW)[0]).toMatchObject({ date: '2025-06-14', seat: '3E' });
+  });
+
+  test.each(['Flight: GK 98', 'Fl ight: GK 98', 'F1 ight: GK 98', 'FLT: GK 98', 'FLIGHT GK98'])(
+    'from %s',
+    (line) => {
+      expect(extractTickets([line, '14JUN'], NOW)[0]?.flightNumber).toBe('GK98');
+    },
+  );
+
+  // Without the label, two digits are a gate, a baggage allowance, anything.
+  test('is not read without its label', () => {
+    expect(extractTickets(['Gate: C10', 'BG30', '14JUN'], NOW)).toEqual([]);
+  });
+});
+
+describe('the places, as the phone reads them', () => {
+  const places = (lines: string[]) => extractTickets(['FLIGHT D7 378', '14JUN', ...lines], NOW)[0].places ?? [];
+
+  // 0SAKA for OSAKA: a zero read for the letter, at the start of a word.
+  test('put a letter back where recognition read a digit', () => {
+    expect(places(['0SAKA KANSAI T1', 'TA1PEI'])).toEqual(expect.arrayContaining(['OSAKA', 'TAIPEI']));
+  });
+
+  // A booking code is letters and digits: MHC33B. Not a place, and not to be read.
+  test('leave out a word of letters and digits mixed', () => {
+    expect(places(['1500 33C QQC33B'])).not.toContain('QQC');
+    expect(places(['QQV18V'])).not.toContain('QQV');
+  });
+
+  test('leave out the line after a label that hides its value below it', () => {
+    expect(places(['PNR:', 'QQKMXA'])).not.toContain('QQKMXA');
+    expect(places(['Name:', 'LEE AMY MS'])).not.toContain('LEE');
+  });
+});
+
+// A booking shown as a table, one flight a row. Recognition reads a table by rows, by
+// columns, or with the cells of a row run together, and all three have to work.
+describe('a table of flights', () => {
+  const facts = (blocks: string[]) =>
+    extractTickets(blocks, NOW).map(({ flightNumber, date }) => ({ flightNumber, date }));
+  const BOTH = [
+    { flightNumber: 'JX198', date: '2026-12-27' },
+    { flightNumber: 'JX199', date: '2026-12-30' },
+  ];
+
+  test('read by rows', () => {
+    expect(
+      facts([
+        'TPE/PUS JX0198 Economy 2026-12-27 08:25 11:30 OK T1 I',
+        'PUS/TPE JX0199 Economy 2026-12-30 12:30 14:15 OK I T1',
+      ]),
+    ).toEqual(BOTH);
+  });
+
+  test('read with the cells of each row run together', () => {
+    expect(
+      facts([
+        'TPE/PUS',
+        'PUS TPE',
+        'JX0198Economy2026-12-27',
+        'JX0199Economy2026-12-30',
+        '08:25',
+        '12:30',
+        '11:30',
+        '14:15',
+      ]),
+    ).toEqual(BOTH);
+  });
+
+  // Every number, then every date: the first number goes with the first date.
+  test('read by columns', () => {
+    expect(
+      facts([
+        'TPE/PUS\nPUS/TPE',
+        'JX0198\nJX0199',
+        'Economy\nEconomy',
+        '2026-12-27\n2026-12-30',
+        '08:25\n12:30',
+        '11:30\n14:15',
+      ]),
+    ).toEqual(BOTH);
+  });
+
+  // Departure and arrival columns are in no order to rely on: the lookup has them.
+  test('read by columns leaves the times to the lookup', () => {
+    const times = extractTickets(['JX0198\nJX0199', '2026-12-27\n2026-12-30', '08:25\n12:30'], NOW).map(
+      (t) => t.time,
+    );
+
+    expect(times).toEqual([null, null]);
+  });
+
+  test('read by columns, with a date printed again below', () => {
+    expect(
+      facts(['JX0198\nJX0199', '2026-12-27\n2026-12-30', 'Issued for travel on 2026-12-27']),
+    ).toEqual(BOTH);
+  });
+
+  // Pairing by order is for a table only: a mail can print the return's date first.
+  test('does not pair by order when a flight has a date of its own', () => {
+    expect(facts(['Return 2027-03-13', 'BR198 2027-03-03', 'BR197'])[0]).toEqual({
+      flightNumber: 'BR198',
+      date: '2027-03-03',
+    });
+  });
+
+  test('a year run into a word is still a date', () => {
+    expect(facts(['JX0198 Economy2026-12-27'])).toEqual([BOTH[0]]);
   });
 });

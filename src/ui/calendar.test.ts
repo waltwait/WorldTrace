@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { monthOf, monthWeeks, shiftMonth, todayString, yearPage } from './calendar';
+import { monthOf, monthWeeks, shiftMonth, todayString, withYear, yearPage } from './calendar';
 
 describe('monthWeeks', () => {
   test('starts a month on its weekday, Sunday first', () => {
@@ -13,6 +13,17 @@ describe('monthWeeks', () => {
 
     expect(days).toHaveLength(30);
     expect(days[29]).toBe('2026-11-30');
+  });
+
+  // Every month is six rows, or the calendar changes size as it is paged through.
+  test('is always six weeks, however the month falls', () => {
+    // February 2026 fits in four rows, August 2026 needs six.
+    for (const month of [2, 8, 11]) {
+      const weeks = monthWeeks({ year: 2026, month });
+
+      expect(weeks).toHaveLength(6);
+      for (const week of weeks) expect(week).toHaveLength(7);
+    }
   });
 
   test('keeps seven to a week, blanks included', () => {
@@ -68,5 +79,20 @@ describe('yearPage', () => {
     const page = yearPage(2026);
 
     expect(yearPage(page[11] + 1)[0]).toBe(page[11] + 1);
+  });
+});
+
+describe('withYear', () => {
+  test('keeps the day, in another year', () => {
+    expect(withYear('2026-07-12', 2019)).toBe('2019-07-12');
+  });
+
+  test('takes the last of February when there is no twenty-ninth', () => {
+    expect(withYear('2028-02-29', 2026)).toBe('2026-02-28');
+  });
+
+  test('has nothing to keep when no real date was chosen', () => {
+    expect(withYear('', 2019)).toBeNull();
+    expect(withYear('2026-02-30', 2019)).toBeNull();
   });
 });

@@ -202,13 +202,40 @@ export function editForm<K extends keyof FlightForm>(
   return { ...form, lookedUp, [key]: value };
 }
 
-/** A number can fly several legs in a day: the ticket's time says which is ours. */
-function pickLeg(
-  legs: readonly LookedUpFlight[],
-  time: string | null,
-): LookedUpFlight | undefined {
-  const atThatTime = legs.find((leg) => utcToLocal(leg.depScheduledUtc, leg.depTz).time === time);
-  return atThatTime ?? legs[0];
+const lettersOf = (text: string) => text.toUpperCase().replace(/[^A-Z]/g, '');
+
+/** Whether the ticket prints this airport, by its code or by its city's name. */
+function printsAirport(
+  printed: ReadonlySet<string>,
+  iata: string,
+  city: string | null | undefined,
+): boolean {
+  if (printed.has(iata.toUpperCase())) return true;
+  if (!city) return false;
+  // HONGKONG on a ticket, Hong Kong from the API.
+  const words = city.toUpperCase().split(/[^A-Z]+/).filter(Boolean);
+  return printed.has(lettersOf(city)) || (words.length > 0 && words.every((w) => printed.has(w)));
+}
+
+/**
+ * A number can fly several legs in a day, D7 378 KUL-TPE-KIX. The ticket's time says
+ * which is ours; failing that, the leg whose places the ticket prints most of. With
+ * nothing to tell them apart it is the first, and the sheet offers the others.
+ */
+function pickLeg(legs: readonly LookedUpFlight[], ticket: TicketFacts): LookedUpFlight | undefined {
+  const atThatTime = legs.find(
+    (leg) => utcToLocal(leg.depScheduledUtc, leg.depTz).time === ticket.time,
+  );
+  if (atThatTime) return atThatTime;
+
+  const printed = new Set(ticket.places ?? []);
+  const score = (leg: LookedUpFlight) =>
+    Number(printsAirport(printed, leg.depIata, leg.depCity)) +
+    Number(printsAirport(printed, leg.arrIata, leg.arrCity));
+  // The first of the best: with nothing printed, every leg scores nothing, and it is
+  // the first of them all.
+  const best = Math.max(...legs.map(score));
+  return legs.find((leg) => score(leg) === best);
 }
 
 /**
@@ -221,20 +248,10 @@ export function formFromTicket(
   legs: readonly LookedUpFlight[],
   base: FlightForm,
 ): FlightForm {
-  const leg = pickLeg(legs, ticket.time);
+  const leg = pickLeg(legs, ticket);
   const seat = ticket.seat ?? base.seat;
 
-  if (leg) {
-    const departure = utcToLocal(leg.depScheduledUtc, leg.depTz);
-    return {
-      ...base,
-      flightNumber: leg.flightNumber,
-      depDate: departure.date,
-      depTime: departure.time,
-      seat,
-      lookedUp: leg,
-    };
-  }
+  if (leg) return withLeg({ ...base, seat }, leg);
 
   return {
     ...base,
@@ -246,7 +263,33 @@ export function formFromTicket(
   };
 }
 
+/**
+ * The form with this leg of the lookup. A number can fly several legs, KUL to TPE and
+ * on to KIX, and with no time on the ticket to choose by, the user chooses.
+ */
+export function withLeg(form: FlightForm, leg: LookedUpFlight): FlightForm {
+  const departure = utcToLocal(leg.depScheduledUtc, leg.depTz);
+  return {
+    ...form,
+    flightNumber: leg.flightNumber,
+    depDate: departure.date,
+    depTime: departure.time,
+    lookedUp: leg,
+  };
+}
+
 /** What the button says after reading. More than one flight must not pass unmentioned. */
 export function legsFoundMessage(legs: ReadonlyArray<{ flightNumber: string }>): string {
   return legs.length > 1 ? `已辨識 ${legs.length} 段航班` : `已辨識 ${legs[0].flightNumber}`;
+}
+
+export type TicketScanStage =
+  | { step: 'reading' }
+  | { step: 'lookingUp'; flightNumber: string }
+  | null;
+
+/** What the ticket-picker button says while OCR and then the timetable lookup run. */
+export function ticketBusyLabel(stage: TicketScanStage): string | undefined {
+  if (!stage) return undefined;
+  return stage.step === 'reading' ? '辨識中…' : `查詢 ${stage.flightNumber}…`;
 }

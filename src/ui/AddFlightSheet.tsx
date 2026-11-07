@@ -1,7 +1,7 @@
-import { memo, useCallback, useState } from 'react';
-import { KeyboardAvoidingView, Modal, Platform, ScrollView, StyleSheet, View } from 'react-native';
+import { memo, useCallback, useEffect, useRef, useState } from 'react';
+import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, View } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
-import * as ImagePicker from 'expo-image-picker';
+import { pickTicketImage } from '../flights/expoPickTicketImage';
 import { expoTicketReader } from '../flights/expoTicketReader';
 import { ticketFor } from '../flights/flightDisplay';
 import {
@@ -10,27 +10,35 @@ import {
   editForm,
   EMPTY_FLIGHT_FORM,
   formFromTicket,
+  withLeg,
   legsFoundMessage,
+  ticketBusyLabel,
   type FlightForm,
+  type TicketScanStage,
 } from '../flights/flightForm';
 import { lookUpFlight } from '../flights/flightLookup';
 import { createAeroDataBoxPort } from '../flights/flightStatusApi';
 import { readTicket } from '../flights/readTicket';
 import type { TicketFacts } from '../flights/ticketFacts';
 import type { FlightRecord, LookedUpFlight } from '../flights/types';
-import { normalizeDate } from '../flights/zonedTime';
+import { normalizeDate, utcToLocal } from '../flights/zonedTime';
 import { apiKey } from '../settings/expoKeyStore';
 import { database } from '../store/database';
 import { expoDocFiles } from '../store/expoDocFiles';
 import { saveNewFlight } from '../store/flightDocs';
 import { ActionButton } from './ActionButton';
 import { DateField } from './DateField';
+import { FadeIn } from './FadeIn';
+import { createAfterClose } from './afterClose';
+import { FullScreenModal } from './FullScreenModal';
 import { Icon } from './Icon';
 import { PressScale } from './PressScale';
+import { SwapText } from './SwapText';
 import { Ticket } from './Ticket';
 import { useStyles, useTheme } from './ThemeProvider';
-import { FONT, NOTO, radius, type Theme } from './themes';
+import { FONT, NOTO, type Theme } from './themes';
 import { Text, TextInput } from './Text';
+import { SheetHeader } from './SheetHeader';
 
 interface AddFlightSheetProps {
   visible: boolean;
@@ -66,6 +74,7 @@ export const AddFlightSheet = memo(function AddFlightSheet({
   const styles = useStyles(make);
   const t = useTheme();
   const [attachedDoc, setAttachedDoc] = useState<AttachedDoc | null>(null);
+  const [afterClose] = useState(createAfterClose);
   // Starts empty: every value a saved flight carries was typed or read off a
   // ticket. See flights/flightForm.ts for what the sheet used to make up.
   const [form, setForm] = useState<FlightForm>(EMPTY_FLIGHT_FORM);
@@ -76,6 +85,22 @@ export const AddFlightSheet = memo(function AddFlightSheet({
 
   // Only when a lookup found nothing does the sheet ask for the rest by hand.
   const [needsTyping, setNeedsTyping] = useState(false);
+  const [scanStage, setScanStage] = useState<TicketScanStage>(null);
+  const [legStep, setLegStep] = useState(0);
+  const [ticketRevealKey, setTicketRevealKey] = useState(0);
+  // Every leg the lookup found, when the number flies more than one.
+  const [legs, setLegs] = useState<LookedUpFlight[]>([]);
+  const pickedUriRef = useRef<string | null>(null);
+  const choosingRef = useRef(false);
+
+  // Closing unmounts the Modal's subtree; clearing transient animation keys and
+  // stale errors prevents anything inside from replaying while the next open slides up.
+  useEffect(() => {
+    if (!visible) {
+      setTicketRevealKey(0);
+      setErrorMsg(null);
+    }
+  }, [visible]);
 
   const setField = useCallback(
     <K extends keyof FlightForm>(key: K) =>
@@ -96,16 +121,30 @@ export const AddFlightSheet = memo(function AddFlightSheet({
       setForm((f) =>
         formFromTicket(ticket, legs, keepTyped ? f : { ...EMPTY_FLIGHT_FORM, notes: f.notes }),
       );
+      setLegs(legs);
       setPendingTickets(rest);
       setNeedsTyping(legs.length === 0);
+      if (legs.length > 0) setTicketRevealKey((n) => n + 1);
       setErrorMsg(notice ?? (ticket.yearGuessed ? '票面沒印年份，請確認日期' : null));
     },
     [],
   );
 
+  const advanceQueue = useCallback(
+    async (queue: TicketFacts[]) => {
+      setLegStep((n) => n + 1);
+      await showTicket(queue);
+    },
+    [showTicket],
+  );
+
   const reset = useCallback(() => {
+    setLegs([]);
     setPendingTickets([]);
     setNeedsTyping(false);
+    setScanStage(null);
+    setLegStep(0);
+    setTicketRevealKey(0);
     setForm(EMPTY_FLIGHT_FORM);
     setAttachedDoc(null);
     setErrorMsg(null);
@@ -115,27 +154,53 @@ export const AddFlightSheet = memo(function AddFlightSheet({
     async (tickets: TicketFacts[]) => {
       if (tickets.length === 0) {
         setErrorMsg('辨識不到航班，請手動填寫');
-          return { ok: false as const };
+        return { ok: false as const };
       }
+      const [first] = tickets;
+      // Show what OCR read off the picture before the network lookup starts, so
+      // both the fields and the button mark the hand-over from reading to asking.
+      setForm((f) => formFromTicket(first, [], { ...EMPTY_FLIGHT_FORM, notes: f.notes }));
+      setLegStep(0);
+      setScanStage({ step: 'lookingUp', flightNumber: first.flightNumber });
       await showTicket(tickets);
       return { ok: true as const, message: legsFoundMessage(tickets) };
     },
     [showTicket],
   );
 
-  const pickImage = useCallback(async () => {
+  const chooseTicketImage = useCallback(async () => {
+    if (choosingRef.current) return false;
+    choosingRef.current = true;
     setErrorMsg(null);
     try {
-      const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'] });
-      if (result.canceled || !result.assets || result.assets.length === 0) {
-        return { ok: false as const };
-      }
-      return await readInto(await readTicket(expoTicketReader, result.assets[0].uri, Date.now()));
+      const uri = await pickTicketImage();
+      if (!uri) return false;
+      pickedUriRef.current = uri;
+      setScanStage({ step: 'reading' });
+      return true;
+    } catch (err) {
+      console.warn('[WorldTrace] ticket picker failed', err);
+      setErrorMsg('無法開啟相簿，請再試一次');
+      return false;
+    } finally {
+      choosingRef.current = false;
+    }
+  }, []);
+
+  const readPickedTicket = useCallback(async () => {
+    const uri = pickedUriRef.current;
+    pickedUriRef.current = null;
+    if (!uri) return { ok: false as const };
+    try {
+      const read = await readTicket(expoTicketReader, uri, Date.now());
+      return await readInto(read);
     } catch (err) {
       // What went wrong is for logcat. The screen only needs to say what to do.
       console.warn('[WorldTrace] ticket reading failed', err);
       setErrorMsg('辨識失敗，請再選一次');
       return { ok: false as const };
+    } finally {
+      setScanStage(null);
     }
   }, [readInto]);
 
@@ -147,6 +212,7 @@ export const AddFlightSheet = memo(function AddFlightSheet({
       return { ok: false as const };
     }
     try {
+      setLegStep(0);
       await showTicket(
         [
           {
@@ -212,56 +278,57 @@ export const AddFlightSheet = memo(function AddFlightSheet({
         },
       );
 
-      onFlightAdded(flight);
+      afterClose.add(() => onFlightAdded(flight));
 
       if (pendingTickets.length > 0) {
         // The same ticket covers the next leg, so it stays attached.
-        await showTicket(pendingTickets);
+        await advanceQueue(pendingTickets);
         return { ok: true as const, message: `已加入 ${flight.flightNumber}` };
       }
 
       // The sheet stays mounted between adds; without this the next flight
       // would get this one's ticket attached and could be saved twice.
-      reset();
+      afterClose.add(reset);
       onClose();
       return { ok: true as const, message: '已加入旅途' };
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : String(err));
       return { ok: false as const };
     }
-  }, [form, attachedDoc, pendingTickets, showTicket, onFlightAdded, onClose, reset]);
+  }, [form, attachedDoc, pendingTickets, advanceQueue, afterClose, onFlightAdded, onClose, reset]);
 
   const preview = form.lookedUp ? buildFlightFromForm(form, Date.now(), 'preview') : null;
 
   return (
-    <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
+    <FullScreenModal
+      visible={visible}
+      onRequestClose={onClose}
+      onExited={afterClose.run}
+      onEntered={afterClose.run}
+    >
       <KeyboardAvoidingView
         style={styles.screen}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
+        <SheetHeader title="新增航班" onClose={onClose} />
         <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-          <View style={styles.header}>
-            <Text style={styles.title}>新增航班</Text>
-            <PressScale style={styles.close} onPress={onClose} label="關閉" hitSlop={8}>
-              <Icon name="close" color={t.ink} size={20} />
-            </PressScale>
-          </View>
-
           <ActionButton
             variant="secondary"
             label="選擇截圖或照片"
-            busyLabel="辨識中…"
-            onPress={pickImage}
+            busyLabel={ticketBusyLabel(scanStage) ?? '辨識中…'}
+            confirm={chooseTicketImage}
+            onPress={readPickedTicket}
           />
 
           {errorMsg ? <Text style={styles.notice}>{errorMsg}</Text> : null}
 
           {pendingTickets.length > 0 ? (
             <View style={styles.queue}>
-              <Text style={styles.queueText}>
-                還有 {pendingTickets.length} 段航班，這段儲存後接著填入
-              </Text>
-              <PressScale onPress={() => void showTicket(pendingTickets)} hitSlop={8}>
+              <SwapText
+                text={`還有 ${pendingTickets.length} 段航班，這段儲存後接著填入`}
+                style={styles.queueText}
+              />
+              <PressScale onPress={() => void advanceQueue(pendingTickets)} hitSlop={8}>
                 <Text style={styles.queueSkip}>略過這段</Text>
               </PressScale>
             </View>
@@ -280,11 +347,50 @@ export const AddFlightSheet = memo(function AddFlightSheet({
             onPress={handleLookUp}
           />
 
+          {legs.length > 1 && form.lookedUp ? (
+            <View style={styles.legs}>
+              {legs.map((leg) => {
+                const chosen = leg === form.lookedUp;
+                return (
+                  <PressScale
+                    key={`${leg.depIata}-${leg.depScheduledUtc}`}
+                    style={[styles.leg, chosen && styles.legChosen]}
+                    onPress={() => {
+                      setForm((f) => withLeg(f, leg));
+                      setTicketRevealKey((n) => n + 1);
+                    }}
+                  >
+                    <Text style={[styles.legRoute, chosen && styles.legTextChosen]}>
+                      {leg.depIata} → {leg.arrIata}
+                    </Text>
+                    <Text style={[styles.legTime, chosen && styles.legTextChosen]}>
+                      {utcToLocal(leg.depScheduledUtc, leg.depTz).time}
+                    </Text>
+                  </PressScale>
+                );
+              })}
+            </View>
+          ) : null}
+
           {preview?.ok ? (
-            <Ticket
-              ticket={ticketFor(preview.flight, Date.now())}
-              heading={`${preview.flight.flightNumber} ${preview.flight.airlineName}`}
-            />
+            ticketRevealKey > 0 ? (
+              <FadeIn
+                key={`${preview.flight.flightNumber}-${preview.flight.depScheduledUtc}-${ticketRevealKey}`}
+                axis={legStep > 0 ? 'x' : 'y'}
+                offset={legStep > 0 ? 18 : 10}
+                pop={legStep === 0}
+              >
+                <Ticket
+                  ticket={ticketFor(preview.flight, Date.now())}
+                  heading={`${preview.flight.flightNumber} ${preview.flight.airlineName}`}
+                />
+              </FadeIn>
+            ) : (
+              <Ticket
+                ticket={ticketFor(preview.flight, Date.now())}
+                heading={`${preview.flight.flightNumber} ${preview.flight.airlineName}`}
+              />
+            )
           ) : null}
 
           {needsTyping && !form.lookedUp ? (
@@ -338,7 +444,7 @@ export const AddFlightSheet = memo(function AddFlightSheet({
           />
         </ScrollView>
       </KeyboardAvoidingView>
-    </Modal>
+    </FullScreenModal>
   );
 });
 
@@ -381,22 +487,7 @@ function Field({
 const make = (t: Theme) =>
   StyleSheet.create({
     screen: { flex: 1, backgroundColor: t.ground },
-    content: { paddingHorizontal: 16, paddingTop: 48, paddingBottom: 32, gap: 14 },
-    header: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      justifyContent: 'space-between',
-      paddingHorizontal: 6,
-    },
-    title: { color: t.ink, fontSize: 30, fontWeight: '900' },
-    close: {
-      width: 44,
-      height: 44,
-      borderRadius: 22,
-      backgroundColor: t.soft,
-      alignItems: 'center',
-      justifyContent: 'center',
-    },
+    content: { paddingHorizontal: 16, paddingTop: 4, paddingBottom: 32, gap: 14 },
     notice: {
       padding: 12,
       borderRadius: 16,
@@ -428,6 +519,18 @@ const make = (t: Theme) =>
       fontSize: 17,
     },
     inputChinese: { fontFamily: NOTO.bold },
+    legs: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+    leg: {
+      paddingHorizontal: 14,
+      paddingVertical: 8,
+      borderRadius: 16,
+      backgroundColor: t.soft,
+      alignItems: 'center',
+    },
+    legChosen: { backgroundColor: t.ink },
+    legRoute: { color: t.ink, fontFamily: FONT.bold, fontSize: 15 },
+    legTime: { color: t.muted, fontFamily: FONT.bold, fontSize: 13 },
+    legTextChosen: { color: '#FFFFFF' },
     attached: {
       minHeight: 48,
       paddingHorizontal: 16,

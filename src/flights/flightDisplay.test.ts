@@ -6,6 +6,7 @@ import {
   departureCountdown,
   nextFlight,
   pastFlights,
+  settleDeparted,
   statusLabel,
   ticketFor,
   upcomingFlights,
@@ -164,6 +165,51 @@ describe('nextFlight', () => {
       on('gone', 1),
     ];
     expect(nextFlight(flights, NOW)).toBeNull();
+  });
+});
+
+describe('settleDeparted', () => {
+  const DEPARTS = Date.UTC(2026, 11, 1, 15, 40);
+  const flight: FlightRecord = { ...tpeLax, depScheduledUtc: DEPARTS, isFinished: false };
+
+  test('finishes a flight once it has left', () => {
+    expect(settleDeparted([flight], DEPARTS + HOUR)[0].isFinished).toBe(true);
+  });
+
+  test('counts from the minute it leaves', () => {
+    expect(settleDeparted([flight], DEPARTS)[0].isFinished).toBe(true);
+    expect(settleDeparted([flight], DEPARTS - 1)[0].isFinished).toBe(false);
+  });
+
+  // Its own departure is the one that matters, and it has not happened yet.
+  test('waits for a delayed flight', () => {
+    const delayed = { ...flight, depEstimatedUtc: DEPARTS + 3 * HOUR };
+
+    expect(settleDeparted([delayed], DEPARTS + HOUR)[0].isFinished).toBe(false);
+    expect(settleDeparted([delayed], DEPARTS + 4 * HOUR)[0].isFinished).toBe(true);
+  });
+
+  // This is what it went wrong on before: a cancelled flight is never flown.
+  test('never finishes a cancelled flight', () => {
+    const cancelled = { ...flight, status: 'CANCELLED' as const };
+
+    expect(settleDeparted([cancelled], DEPARTS + HOUR)[0].isFinished).toBe(false);
+  });
+
+  test('leaves the status alone', () => {
+    expect(settleDeparted([flight], DEPARTS + HOUR)[0].status).toBe(flight.status);
+  });
+
+  test('hands back a flight it did not change', () => {
+    expect(settleDeparted([flight], DEPARTS - HOUR)[0]).toBe(flight);
+  });
+
+  test('reads as finished, and moves to the past', () => {
+    const settled = settleDeparted([flight], DEPARTS + HOUR);
+
+    expect(statusLabel(settled[0])).toBe('已完成');
+    expect(pastFlights(settled)).toHaveLength(1);
+    expect(upcomingFlights(settled)).toHaveLength(0);
   });
 });
 

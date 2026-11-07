@@ -1,5 +1,10 @@
 import { memo, useCallback, useEffect, useState } from 'react';
-import { Modal, ScrollView, StyleSheet, View } from 'react-native';
+import { RefreshControl, ScrollView, StyleSheet, View } from 'react-native';
+import { expoTicketReader } from '../flights/expoTicketReader';
+import { pickTicketImage } from '../flights/expoPickTicketImage';
+import { readTicket } from '../flights/readTicket';
+import { boardingPassOpen } from '../flights/reminders';
+import { seatFromTicket } from '../flights/seatFromTicket';
 import * as DocumentPicker from 'expo-document-picker';
 import * as Sharing from 'expo-sharing';
 import { airportTime, statusLabel, ticketFor } from '../flights/flightDisplay';
@@ -12,26 +17,32 @@ import { arrivalTimeDifference } from '../flights/zonedTime';
 import { apiKey } from '../settings/expoKeyStore';
 import { database } from '../store/database';
 import { expoDocFiles } from '../store/expoDocFiles';
-import { attachFlightDoc, deleteFlightAndDocs, removeFlightDoc } from '../store/flightDocs';
+import { attachFlightDoc, removeFlightDoc } from '../store/flightDocs';
 import { saveSyncedFlight } from '../store/flightRefresh';
 import { listFlightDocs, updateFlight } from '../store/flights';
 import { ActionButton } from './ActionButton';
 import { ask } from './dialog';
 import { formatFlightDistance } from './format';
+import { FullScreenModal } from './FullScreenModal';
 import { Icon } from './Icon';
 import { PressScale } from './PressScale';
+import { SwapText } from './SwapText';
 import { Ticket } from './Ticket';
 import { useStyles, useTheme } from './ThemeProvider';
-import { FONT, radius, SHARED, type Theme } from './themes';
+import { FONT, radius, type Theme } from './themes';
 import { Text, TextInput } from './Text';
+import { SheetHeader } from './SheetHeader';
 
 interface FlightDetailSheetProps {
   flight: FlightRecord | null;
   visible: boolean;
   onClose: () => void;
   onFlightUpdated: (flight: FlightRecord) => void;
-  onFlightDeleted: (flightId: string) => void;
   onViewOnMap?: (flight: FlightRecord) => void;
+  /** Opened from the reminder: start by reading the boarding pass, once the page is up. */
+  readPassOnOpen?: boolean;
+  /** The pass has been asked for, or there was no point asking. */
+  onPassStarted?: () => void;
 }
 
 // The sheet is mounted before any flight is chosen. Every hook lives in
@@ -46,18 +57,13 @@ export const FlightDetailSheet = memo(function FlightDetailSheet(
   return <FlightDetailContent {...props} flight={flight} />;
 });
 
-/**
- * ActionButton swallows a thrown error, so each action here catches its own
- * and says so in the app's dialog: a failure is reported by a dialog, never
- * by the button (CLAUDE.md).
- */
-async function failed(title: string, error: unknown): Promise<{ ok: false }> {
+/** Reports a failed detail action in the app's dialog (CLAUDE.md). */
+async function failed(title: string, error: unknown): Promise<void> {
   await ask({
     title,
     message: error instanceof Error ? error.message : String(error),
     confirmLabel: '好',
   });
-  return { ok: false };
 }
 
 function FlightDetailContent({
@@ -65,16 +71,19 @@ function FlightDetailContent({
   visible,
   onClose,
   onFlightUpdated,
-  onFlightDeleted,
   onViewOnMap,
+  readPassOnOpen = false,
+  onPassStarted,
 }: FlightDetailSheetProps & { flight: FlightRecord }) {
   const styles = useStyles(make);
   const t = useTheme();
+  // The picker waits for the slide: launched during it, the page arrived under it.
+  const [entered, setEntered] = useState(false);
+  const passOpen = boardingPassOpen(flight, Date.now());
   const [docs, setDocs] = useState<FlightDocRecord[]>([]);
-  const [editingGate, setEditingGate] = useState(false);
-  const [depGateInput, setDepGateInput] = useState('');
-  const [arrGateInput, setArrGateInput] = useState('');
-  const [baggageInput, setBaggageInput] = useState('');
+  const [syncing, setSyncing] = useState(false);
+  const [editingSeat, setEditingSeat] = useState(false);
+  const [seatInput, setSeatInput] = useState(flight.seat ?? '');
 
   useEffect(() => {
     let cancelled = false;
@@ -88,82 +97,88 @@ function FlightDetailContent({
       }
     })();
 
-    setEditingGate(false);
-
     return () => {
       cancelled = true;
     };
   }, [flight.id, visible]);
 
-  // On the values as well as the id: a sync changes them under an open sheet,
-  // and saving the old text in these boxes would wipe what it found.
-  useEffect(() => {
-    setDepGateInput(flight.depGate ?? '');
-    setArrGateInput(flight.arrGate ?? '');
-    setBaggageInput(flight.baggageBelt ?? '');
-  }, [flight.id, flight.depGate, flight.arrGate, flight.baggageBelt]);
-
   // The offsets on the day of the flight, not today: across a daylight-saving
   // change the difference is an hour out otherwise.
   const timeDifference = arrivalTimeDifference(flight.depTz, flight.arrTz, flight.depScheduledUtc);
 
-  const toggleFinished = useCallback(async () => {
-    try {
-      const nextFinished = !flight.isFinished;
-      const db = await database();
-      await updateFlight(db, flight.id, { isFinished: nextFinished });
-      const updated = { ...flight, isFinished: nextFinished };
-      onFlightUpdated(updated);
-      return {
-        ok: true as const,
-        message: nextFinished ? '已標記為完成' : '已移至即將出發',
-      };
-    } catch (error) {
-      return failed('無法更新航班', error);
-    }
-  }, [flight, onFlightUpdated]);
-
-  const handleSyncStatus = useCallback(async () => {
+  // Pulled down by hand, so this asks whatever the polling schedule says. A status
+  // that changes shows on the page; only an empty answer needs saying.
+  const pullToSync = useCallback(async () => {
+    setSyncing(true);
+    let nothing = false;
     try {
       const port = createAeroDataBoxPort((await apiKey('flightStatus')) ?? undefined);
       const updated = await syncFlightStatus(flight, port, Date.now());
       if (updated === flight) {
-        return { ok: true as const, message: '目前查不到最新動態' };
+        nothing = true;
+      } else {
+        await saveSyncedFlight(await database(), flight, updated);
+        onFlightUpdated(updated);
       }
-      const db = await database();
-      await saveSyncedFlight(db, flight, updated);
-      onFlightUpdated(updated);
-      return {
-        ok: true as const,
-        message: `航班狀態：${statusLabel(updated)}${updated.depGate ? ` · 登機門 ${updated.depGate}` : ''}`,
-      };
     } catch (error) {
-      return failed('同步失敗', error);
+      setSyncing(false);
+      await failed('同步失敗', error);
+      return;
     }
+    setSyncing(false);
+    if (nothing) await ask({ title: '目前查不到最新動態', confirmLabel: '好' });
   }, [flight, onFlightUpdated]);
 
-  const handleSaveGates = useCallback(async () => {
-    const patch = {
-      depGate: depGateInput.trim() || null,
-      arrGate: arrGateInput.trim() || null,
-      baggageBelt: baggageInput.trim() || null,
-    };
+  const saveSeat = useCallback(
+    async (seat: string | null) => {
+      await updateFlight(await database(), flight.id, { seat });
+      onFlightUpdated({ ...flight, seat });
+    },
+    [flight, onFlightUpdated],
+  );
+
+  // On the day: the boarding pass gives the seat, if it is this flight's. The picture
+  // is deleted once read, as when a flight is added.
+  const seatFromPass = useCallback(async () => {
     try {
-      const db = await database();
-      await updateFlight(db, flight.id, patch);
-      const updated: FlightRecord = {
-        ...flight,
-        depGate: patch.depGate,
-        arrGate: patch.arrGate,
-        baggageBelt: patch.baggageBelt,
-      };
-      onFlightUpdated(updated);
-      setEditingGate(false);
-      return { ok: true as const, message: '已更新登機門與行李轉盤' };
+      const uri = await pickTicketImage();
+      if (!uri) return { ok: false as const };
+      const result = seatFromTicket(flight, await readTicket(expoTicketReader, uri, Date.now()));
+      if (!result.ok) {
+        await ask({ title: '無法更新座位', message: result.message, confirmLabel: '好' });
+        return { ok: false as const };
+      }
+      await saveSeat(result.seat);
+      setSeatInput(result.seat);
+      return { ok: true as const, message: `座位 ${result.seat}` };
     } catch (error) {
-      return failed('無法儲存登機門', error);
+      await failed('無法更新座位', error);
+      return { ok: false as const };
     }
-  }, [flight, depGateInput, arrGateInput, baggageInput, onFlightUpdated]);
+  }, [flight, saveSeat]);
+
+  const seatByHand = useCallback(async () => {
+    try {
+      await saveSeat(seatInput.trim().toUpperCase() || null);
+      setEditingSeat(false);
+      return { ok: true as const, message: '已儲存' };
+    } catch (error) {
+      await failed('無法更新座位', error);
+      return { ok: false as const };
+    }
+  }, [saveSeat, seatInput]);
+
+  useEffect(() => {
+    if (!visible) setEntered(false);
+  }, [visible]);
+
+  // Tapped from the reminder: the photo is asked for at once. Tapped after it landed,
+  // there is no pass to read, and the page just opens.
+  useEffect(() => {
+    if (!readPassOnOpen || !entered) return;
+    onPassStarted?.();
+    if (boardingPassOpen(flight, Date.now())) void seatFromPass();
+  }, [entered, flight, onPassStarted, readPassOnOpen, seatFromPass]);
 
   const handleAddDoc = useCallback(async () => {
     try {
@@ -236,38 +251,19 @@ function FlightDetailContent({
     [],
   );
 
-  const handleDelete = useCallback(async () => {
-    const confirmed = await ask({
-      title: '刪除航班',
-      message: `確定要刪除 ${flight.flightNumber} 嗎？此操作無法復原。`,
-      confirmLabel: '刪除',
-      cancelLabel: '取消',
-      destructive: true,
-    });
-
-    if (!confirmed) return;
-
-    try {
-      const db = await database();
-      await deleteFlightAndDocs(db, expoDocFiles, flight.id);
-      onFlightDeleted(flight.id);
-      onClose();
-    } catch (error) {
-      await failed('無法刪除航班', error);
-    }
-  }, [flight, onFlightDeleted, onClose]);
-
   return (
-    <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
+    <FullScreenModal visible={visible} onRequestClose={onClose} onEntered={() => setEntered(true)}>
+      <View style={styles.screen}>
+      <SheetHeader onBack={onClose} />
       <ScrollView
-        style={styles.screen}
         contentContainerStyle={styles.content}
-        keyboardShouldPersistTaps="handled"
+        // Nothing new can come of a flight that is over, and asking costs.
+        refreshControl={
+          flight.isFinished || flight.status === 'CANCELLED' ? undefined : (
+            <RefreshControl refreshing={syncing} onRefresh={pullToSync} tintColor={t.muted} />
+          )
+        }
       >
-        <PressScale style={styles.back} onPress={onClose} label="返回" hitSlop={8}>
-          <Icon name="back" color={t.ink} />
-        </PressScale>
-
         <Ticket
           ticket={ticketFor(flight, Date.now())}
           heading={`${flight.flightNumber} ${flight.airlineName}`}
@@ -275,12 +271,18 @@ function FlightDetailContent({
 
         <View style={styles.times}>
           <View>
-            <Text style={styles.time}>{airportTime(flight.depScheduledUtc, flight.depTz)}</Text>
-            <Text style={styles.place}>{placeLine(flight.depCity, flight.depIata, flight.depTerminal)}</Text>
+            <SwapText text={airportTime(flight.depScheduledUtc, flight.depTz)} style={styles.time} />
+            <SwapText
+              text={placeLine(flight.depCity, flight.depIata, flight.depTerminal)}
+              style={styles.place}
+            />
           </View>
           <View style={styles.alignEnd}>
-            <Text style={styles.time}>{airportTime(flight.arrScheduledUtc, flight.arrTz)}</Text>
-            <Text style={styles.place}>{placeLine(flight.arrCity, flight.arrIata, flight.arrTerminal)}</Text>
+            <SwapText text={airportTime(flight.arrScheduledUtc, flight.arrTz)} style={styles.time} />
+            <SwapText
+              text={placeLine(flight.arrCity, flight.arrIata, flight.arrTerminal)}
+              style={styles.place}
+            />
           </View>
         </View>
 
@@ -289,33 +291,47 @@ function FlightDetailContent({
           <Fact label="飛行時間" value={durationText(flight.durationMinutes)} />
           <Fact label="距離" value={formatFlightDistance(flight.distanceKm)} />
           {timeDifference.hasDifference ? <Fact label="時差" value={timeDifference.headline} /> : null}
-          {flight.scheduleSource === 'nearby' ? <Fact label="班表" value="取自近期班次" /> : null}
-          {flight.seat ? <Fact label="座位" value={flight.seat} /> : null}
+          {flight.scheduleSource === 'nearby' ? <Fact label="班表" value="取自鄰近班次" /> : null}
           {flight.notes ? <Fact label="備註" value={flight.notes} /> : null}
         </View>
 
         <View style={styles.group}>
-          <PressScale onPress={() => setEditingGate((v) => !v)}>
-            <Fact label="起飛登機門" value={flight.depGate ?? '—'} first />
-            <Fact label="抵達登機門" value={flight.arrGate ?? '—'} />
-            <Fact label="行李轉盤" value={flight.baggageBelt ?? '—'} />
+          {/* From an hour before it leaves until it lands: the pass is in the hand then. */}
+          {passOpen ? (
+            <ActionButton
+              variant="row"
+              label="用登機證更新座位"
+              busyLabel="辨識中…"
+              onPress={seatFromPass}
+            />
+          ) : null}
+          <PressScale
+            style={[styles.docRow, passOpen && styles.line]}
+            onPress={() => setEditingSeat((v) => !v)}
+          >
+            <Text style={styles.docText}>座位</Text>
+            <Text style={styles.seatValue}>{flight.seat ?? '—'}</Text>
           </PressScale>
-
-          {editingGate ? (
-            <View style={styles.editor}>
-              <View style={styles.inputs}>
-                <GateInput label="起飛" value={depGateInput} onChange={setDepGateInput} caps />
-                <GateInput label="抵達" value={arrGateInput} onChange={setArrGateInput} caps />
-                <GateInput label="轉盤" value={baggageInput} onChange={setBaggageInput} />
-              </View>
-              <ActionButton
-                variant="primary"
-                label="儲存修改"
-                busyLabel="儲存中…"
-                onPress={handleSaveGates}
+          {editingSeat ? (
+            <View style={[styles.seatEditor, styles.line]}>
+              <TextInput
+                style={styles.seatInput}
+                value={seatInput}
+                onChangeText={setSeatInput}
+                placeholder="22C"
+                placeholderTextColor={t.muted}
+                autoCapitalize="characters"
+                maxLength={4}
               />
+              <ActionButton variant="primary" label="儲存" busyLabel="儲存中…" onPress={seatByHand} />
             </View>
           ) : null}
+        </View>
+
+        <View style={styles.group}>
+          <Fact label="起飛登機門" value={flight.depGate ?? '—'} first />
+          <Fact label="抵達登機門" value={flight.arrGate ?? '—'} />
+          <Fact label="行李轉盤" value={flight.baggageBelt ?? '—'} />
         </View>
 
         <View style={styles.group}>
@@ -340,37 +356,18 @@ function FlightDetailContent({
           </PressScale>
         </View>
 
-        <View style={styles.actions}>
-          <PressScale
-            containerStyle={styles.action}
-            style={styles.mapButton}
-            onPress={() => {
-              onClose();
-              onViewOnMap?.(flight);
-            }}
-          >
-            <Text style={styles.mapButtonText}>在地圖上看</Text>
-          </PressScale>
-          <ActionButton
-            variant="secondary"
-            label="更新動態"
-            busyLabel="查詢中…"
-            onPress={handleSyncStatus}
-          />
-        </View>
-
-        <View style={styles.quiet}>
-          <PressScale onPress={() => void toggleFinished()} hitSlop={8}>
-            <Text style={styles.quietText}>
-              {flight.isFinished ? '移回即將出發' : '標記為已完成'}
-            </Text>
-          </PressScale>
-          <PressScale onPress={() => void handleDelete()} hitSlop={8}>
-            <Text style={styles.deleteText}>刪除航班</Text>
-          </PressScale>
-        </View>
+        <PressScale
+          style={styles.mapButton}
+          onPress={() => {
+            onClose();
+            onViewOnMap?.(flight);
+          }}
+        >
+          <Text style={styles.mapButtonText}>在地圖上看</Text>
+        </PressScale>
       </ScrollView>
-    </Modal>
+      </View>
+    </FullScreenModal>
   );
 }
 
@@ -387,32 +384,7 @@ function Fact({ label, value, first = false }: { label: string; value: string; f
   return (
     <View style={[styles.fact, !first && styles.line]}>
       <Text style={styles.factLabel}>{label}</Text>
-      <Text style={styles.factValue}>{value}</Text>
-    </View>
-  );
-}
-
-function GateInput({
-  label,
-  value,
-  onChange,
-  caps = false,
-}: {
-  label: string;
-  value: string;
-  onChange: (text: string) => void;
-  caps?: boolean;
-}) {
-  const styles = useStyles(make);
-  return (
-    <View style={styles.input}>
-      <Text style={styles.factLabel}>{label}</Text>
-      <TextInput
-        style={styles.inputField}
-        value={value}
-        onChangeText={onChange}
-        autoCapitalize={caps ? 'characters' : 'none'}
-      />
+      <SwapText text={value} style={styles.factValue} />
     </View>
   );
 }
@@ -420,15 +392,7 @@ function GateInput({
 const make = (t: Theme) =>
   StyleSheet.create({
     screen: { flex: 1, backgroundColor: t.ground },
-    content: { paddingHorizontal: 16, paddingTop: 48, paddingBottom: 32, gap: 12 },
-    back: {
-      width: 44,
-      height: 44,
-      borderRadius: 22,
-      backgroundColor: t.soft,
-      alignItems: 'center',
-      justifyContent: 'center',
-    },
+    content: { paddingHorizontal: 16, paddingTop: 4, paddingBottom: 32, gap: 12 },
     times: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 8 },
     alignEnd: { alignItems: 'flex-end' },
     time: { color: t.ink, fontFamily: FONT.extraBold, fontSize: 30 },
@@ -445,18 +409,6 @@ const make = (t: Theme) =>
     },
     factLabel: { color: t.muted, fontSize: 15 },
     factValue: { color: t.ink, fontSize: 15, fontWeight: '500', flexShrink: 1, textAlign: 'right' },
-    editor: { padding: 12, gap: 10, borderTopWidth: 1, borderTopColor: t.ground },
-    inputs: { flexDirection: 'row', gap: 8 },
-    input: { flex: 1, gap: 4 },
-    inputField: {
-      height: 44,
-      paddingHorizontal: 12,
-      borderRadius: 14,
-      backgroundColor: t.ground,
-      color: t.ink,
-      fontSize: 16,
-      fontWeight: '700',
-    },
     docRow: {
       minHeight: 48,
       paddingHorizontal: 16,
@@ -467,8 +419,18 @@ const make = (t: Theme) =>
     },
     docName: { flex: 1 },
     docText: { color: t.ink, fontSize: 15 },
-    actions: { flexDirection: 'row', gap: 10 },
-    action: { flexGrow: 1, flexBasis: 0 },
+    seatValue: { color: t.ink, fontFamily: FONT.bold, fontSize: 15 },
+    seatEditor: { flexDirection: 'row', alignItems: 'center', gap: 10, padding: 12 },
+    seatInput: {
+      flex: 1,
+      height: 48,
+      paddingHorizontal: 14,
+      borderRadius: 14,
+      backgroundColor: t.ground,
+      color: t.ink,
+      fontFamily: FONT.bold,
+      fontSize: 17,
+    },
     mapButton: {
       height: 52,
       borderRadius: radius.round,
@@ -477,12 +439,4 @@ const make = (t: Theme) =>
       justifyContent: 'center',
     },
     mapButtonText: { color: '#FFFFFF', fontSize: 15, fontWeight: '700' },
-    quiet: {
-      flexDirection: 'row',
-      justifyContent: 'space-between',
-      paddingHorizontal: 8,
-      paddingVertical: 6,
-    },
-    quietText: { color: t.ink, fontSize: 14 },
-    deleteText: { color: SHARED.danger, fontSize: 14 },
   });

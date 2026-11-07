@@ -72,7 +72,8 @@ async function readTurn(
 ): Promise<TicketFacts[]> {
   const image = turn === 0 ? uri : await reader.rotate(uri, turn);
   try {
-    return extractTickets(await reader.read(image), now);
+    const blocks = await reader.read(image);
+    return extractTickets(blocks, now);
   } finally {
     if (image !== uri) reader.discard(image);
   }

@@ -1,5 +1,5 @@
 import { describe, expect, test, vi } from 'vitest';
-import { isWithinLookup, lookUpFlight, movedToDate, standInDates } from './flightLookup';
+import { bestFlownDate, isWithinLookup, lookUpFlight, movedToDate, standInDates } from './flightLookup';
 import type { LookedUpFlight } from './types';
 import { utcToLocal } from './zonedTime';
 
@@ -49,14 +49,25 @@ describe('standInDates', () => {
   // 21 June 2018 was a Thursday. A timetable runs by the weekday and the season, so
   // the Thursday nearest that date this year comes first, then the date itself.
   test('tries the same weekday near the same date, the date, then the last such weekday', () => {
-    expect(standInDates('2018-06-21', NOW)).toEqual(['2026-06-18', '2026-06-21', '2026-11-05']);
+    expect(standInDates('2018-06-21', NOW).slice(0, 3)).toEqual([
+      '2026-06-18',
+      '2026-06-21',
+      '2026-11-05',
+    ]);
   });
 
-  test('keeps the weekday in the first and the last', () => {
+  // A number that has stopped flying, as TR898 did in March 2026, is only to be found
+  // in the oldest part of the year that can be asked about.
+  test('then reaches back to the start of the year, and to halfway', () => {
+    expect(standInDates('2018-06-21', NOW).slice(3)).toEqual(['2025-11-13', '2026-05-07']);
+  });
+
+  test('keeps the weekday in all but the date itself', () => {
     const dates = standInDates('2018-06-21', NOW);
 
-    expect(weekday(dates[0])).toBe(weekday('2018-06-21'));
-    expect(weekday(dates[2])).toBe(weekday('2018-06-21'));
+    for (const date of [dates[0], ...dates.slice(2)]) {
+      expect(weekday(date)).toBe(weekday('2018-06-21'));
+    }
   });
 
   test('goes back a year when the date has not come round yet', () => {
@@ -196,5 +207,196 @@ describe('lookUpFlight', () => {
 
     expect(lookup.findFlights).not.toHaveBeenCalled();
     expect(notice).toContain('一年');
+  });
+});
+
+describe('bestFlownDate', () => {
+  // 20 May 2024 was a Monday.
+  test('takes the same weekday nearest the same date this year', () => {
+    expect(bestFlownDate(['2026-03-22', '2026-03-23', '2026-03-16'], '2024-05-20', NOW)).toBe(
+      '2026-03-23',
+    );
+  });
+
+  test('takes the nearest when it never flew on that weekday', () => {
+    expect(bestFlownDate(['2026-01-03', '2026-03-28'], '2024-05-20', NOW)).toBe('2026-03-28');
+  });
+
+  test('passes over a day that cannot be asked about, or has not come yet', () => {
+    expect(bestFlownDate(['2024-05-20', '2026-12-07'], '2024-05-20', NOW)).toBeNull();
+  });
+
+  test('is nothing with nothing to choose from', () => {
+    expect(bestFlownDate([], '2024-05-20', NOW)).toBeNull();
+  });
+});
+
+describe('looking up a number that has stopped flying', () => {
+  const flewUntilMarch = (dates: string[] | null) => ({
+    findFlights: vi.fn(async (_n: string, date: string) => (date <= '2026-03-28' ? [leg] : [])),
+    flightDates: vi.fn(async () => dates),
+  });
+
+  test('asks which days it flew, and looks up the best of them first', async () => {
+    const port = flewUntilMarch(['2026-03-23', '2026-03-24']);
+
+    const { legs } = await lookUpFlight(port, 'TR198', '2024-05-20', NOW);
+
+    expect(port.findFlights).toHaveBeenCalledTimes(1);
+    expect(port.findFlights).toHaveBeenCalledWith('TR198', '2026-03-23');
+    expect(utcToLocal(legs[0].depScheduledUtc, legs[0].depTz).date).toBe('2024-05-20');
+  });
+
+  test('guesses as before when the API will not say, reaching back far enough', async () => {
+    const port = flewUntilMarch(null);
+
+    const { legs } = await lookUpFlight(port, 'TR198', '2024-05-20', NOW);
+
+    expect(legs).toHaveLength(1);
+  });
+
+  test('does not ask which days it flew for a date it can look up itself', async () => {
+    const port = flewUntilMarch(['2026-03-23']);
+
+    await lookUpFlight(port, 'TR198', '2026-03-23', NOW);
+
+    expect(port.flightDates).not.toHaveBeenCalled();
+  });
+
+  test('stops at once when the API reports no operating dates at all (204 -> [])', async () => {
+    const port = {
+      findFlights: vi.fn(async () => []),
+      flightDates: vi.fn(async () => []),
+    };
+
+    const { legs, notice } = await lookUpFlight(port, 'CX9999', '2018-06-21', NOW);
+
+    expect(legs).toEqual([]);
+    expect(notice).toContain('查不到');
+    expect(port.findFlights).not.toHaveBeenCalled();
+  });
+});
+
+describe('looking up an in-range date missing from a sparse schedule (e.g. CX500 2027-03-11)', () => {
+  const cx500: LookedUpFlight = {
+    ...leg,
+    flightNumber: 'CX500',
+    airlineCode: 'CX',
+    airlineName: 'Cathay Pacific',
+    depIata: 'HKG',
+    arrIata: 'NRT',
+    depScheduledUtc: Date.UTC(2027, 2, 10, 7, 25), // 15:25 HKT on 2027-03-10
+    arrScheduledUtc: Date.UTC(2027, 2, 10, 11, 20), // 20:20 JST on 2027-03-10
+    depTz: 'Asia/Hong_Kong',
+    arrTz: 'Asia/Tokyo',
+    depCity: 'Hong Kong',
+    arrCity: 'Tokyo',
+    depCountry: 'HK',
+    arrCountry: 'JP',
+    distanceKm: 2962,
+  };
+
+  test('borrows a nearby filed date from flightDates when the requested date returns empty', async () => {
+    const port = {
+      findFlights: vi.fn(async (_n: string, date: string) =>
+        date === '2027-03-10' ? [cx500] : [],
+      ),
+      flightDates: vi.fn(async () => ['2026-11-05', '2027-03-10']),
+    };
+
+    const { legs, notice } = await lookUpFlight(port, 'CX500', '2027-03-11', NOW);
+
+    expect(port.findFlights).toHaveBeenCalledWith('CX500', '2027-03-11');
+    expect(port.findFlights).toHaveBeenCalledWith('CX500', '2027-03-10');
+    expect(port.findFlights).toHaveBeenCalledTimes(2);
+    expect(legs).toHaveLength(1);
+    expect(utcToLocal(legs[0].depScheduledUtc, legs[0].depTz)).toEqual({
+      date: '2027-03-11',
+      time: '15:25',
+    });
+    expect(legs[0].borrowed).toBe(true);
+    expect(legs[0].depTerminal).toBeNull();
+    expect(notice).toContain('鄰近班次');
+  });
+
+  test('prefers the same weekday near the target date over an adjacent different weekday', async () => {
+    const thursdayWeekBefore: LookedUpFlight = {
+      ...cx500,
+      depScheduledUtc: Date.UTC(2027, 2, 4, 7, 25),
+      arrScheduledUtc: Date.UTC(2027, 2, 4, 11, 20),
+    };
+    const port = {
+      findFlights: vi.fn(async (_n: string, date: string) => {
+        if (date === '2027-03-04') return [thursdayWeekBefore];
+        if (date === '2027-03-10') return [cx500];
+        return [];
+      }),
+      flightDates: vi.fn(async () => ['2027-03-04', '2027-03-10']),
+    };
+
+    const { legs } = await lookUpFlight(port, 'CX500', '2027-03-11', NOW);
+
+    expect(port.findFlights).toHaveBeenNthCalledWith(2, 'CX500', '2027-03-04');
+    expect(port.findFlights).toHaveBeenCalledTimes(2);
+    expect(utcToLocal(legs[0].depScheduledUtc, legs[0].depTz).date).toBe('2027-03-11');
+  });
+
+  test('tries the adjacent day first, then past flown dates when flightDates only indexes history', async () => {
+    const febLastYear: LookedUpFlight = {
+      ...cx500,
+      depScheduledUtc: Date.UTC(2026, 2, 12, 7, 25),
+      arrScheduledUtc: Date.UTC(2026, 2, 12, 11, 20),
+    };
+    const portWith2027 = {
+      findFlights: vi.fn(async (_n: string, date: string) =>
+        date === '2027-03-10' ? [cx500] : date === '2026-03-12' ? [febLastYear] : [],
+      ),
+      flightDates: vi.fn(async () => ['2026-03-12', '2026-11-05']),
+    };
+
+    const hitAdjacent = await lookUpFlight(portWith2027, 'CX500', '2027-03-11', NOW);
+    expect(portWith2027.findFlights).toHaveBeenNthCalledWith(2, 'CX500', '2027-03-10');
+    expect(hitAdjacent.legs).toHaveLength(1);
+
+    const portHistoryOnly = {
+      findFlights: vi.fn(async (_n: string, date: string) =>
+        date === '2026-03-12' ? [febLastYear] : [],
+      ),
+      flightDates: vi.fn(async () => ['2026-03-12', '2026-11-05']),
+    };
+
+    const hitHistory = await lookUpFlight(portHistoryOnly, 'CX500', '2027-03-11', NOW);
+    expect(portHistoryOnly.findFlights).toHaveBeenCalledWith('CX500', '2026-03-12');
+    expect(utcToLocal(hitHistory.legs[0].depScheduledUtc, hitHistory.legs[0].depTz)).toEqual({
+      date: '2027-03-11',
+      time: '15:25',
+    });
+  });
+
+  test('still checks nearby days for a future flight when flightDates is unavailable', async () => {
+    const port = {
+      findFlights: vi.fn(async (_n: string, date: string) =>
+        date === '2027-03-10' ? [cx500] : [],
+      ),
+    };
+
+    const { legs, notice } = await lookUpFlight(port, 'CX500', '2027-03-11', NOW);
+
+    expect(legs).toHaveLength(1);
+    expect(legs[0].borrowed).toBe(true);
+    expect(notice).toContain('鄰近班次');
+  });
+
+  test('does not probe further when flightDates says the flight number has zero dates', async () => {
+    const port = {
+      findFlights: vi.fn(async () => []),
+      flightDates: vi.fn(async () => []),
+    };
+
+    const { legs, notice } = await lookUpFlight(port, 'CX9999', '2027-03-11', NOW);
+
+    expect(legs).toEqual([]);
+    expect(notice).toContain('查不到');
+    expect(port.findFlights).toHaveBeenCalledTimes(1);
   });
 });

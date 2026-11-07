@@ -82,6 +82,35 @@ describe('flightStatusApi', () => {
       expect(shouldPollFlight(due, now)).toBe(true);
     });
 
+    // A flight whose schedule was borrowed or typed by hand is one the API had no
+    // timetable for on that day. Asking months ahead gets 204 every time, leaves
+    // lastSyncedAt empty, and spends 2 units on every launch until live feeds start.
+    test('waits until within 7 days of departure for a borrowed or typed schedule', () => {
+      const DAY = 24 * 3600 * 1000;
+      const farNearby = createMockFlight({
+        scheduleSource: 'nearby',
+        depScheduledUtc: now + 30 * DAY,
+        arrScheduledUtc: now + 30 * DAY + 3 * 3600 * 1000,
+        lastSyncedAt: null,
+      });
+      const farUser = createMockFlight({
+        scheduleSource: 'user',
+        depScheduledUtc: now + 30 * DAY,
+        arrScheduledUtc: now + 30 * DAY + 3 * 3600 * 1000,
+        lastSyncedAt: null,
+      });
+      const closeNearby = createMockFlight({
+        scheduleSource: 'nearby',
+        depScheduledUtc: now + 5 * DAY,
+        arrScheduledUtc: now + 5 * DAY + 3 * 3600 * 1000,
+        lastSyncedAt: null,
+      });
+
+      expect(shouldPollFlight(farNearby, now)).toBe(false);
+      expect(shouldPollFlight(farUser, now)).toBe(false);
+      expect(shouldPollFlight(closeNearby, now)).toBe(true);
+    });
+
     test('departure 24h ~ 48h: polls every 4 hours', () => {
       const flight = createMockFlight({
         depScheduledUtc: now + 30 * 3600 * 1000, // 30h away
@@ -270,11 +299,48 @@ describe('flightStatusApi', () => {
       arrival: { airport: { iata: 'XXX' } },
     });
 
+    test('asks which days a number flew, and reads the dates', async () => {
+      const seen: string[] = [];
+      const port = createAeroDataBoxPort('key', fakeFetch(['2026-03-23', '2026-03-24'], seen));
+
+      expect(await port.flightDates('TR0198')).toEqual(['2026-03-23', '2026-03-24']);
+      expect(seen[0]).toMatch(/\/flights\/number\/TR198\/dates$/);
+    });
+
+    test('has no dates when the answer is not a list of them', async () => {
+      const port = createAeroDataBoxPort('key', fakeFetch({ message: 'no' }));
+
+      expect(await port.flightDates('TR198')).toBeNull();
+    });
+
+    test('gives an empty date list on 204 No Content, distinct from a failed request', async () => {
+      const noContent = (async () => ({
+        ok: true,
+        status: 204,
+        json: async () => {
+          throw new SyntaxError('Unexpected end of JSON input');
+        },
+      })) as unknown as typeof fetch;
+      const port = createAeroDataBoxPort('key', noContent);
+
+      expect(await port.flightDates('CX9999')).toEqual([]);
+      expect(await port.findFlights('CX500', '2027-03-11')).toEqual([]);
+    });
+
     test('asks for the flight number on the local date it was given', async () => {
       const seen: string[] = [];
       const port = createAeroDataBoxPort('key', fakeFetch([leg('TPE')], seen));
       await port.fetchFlightStatus('br198', '2026-12-01', 'TPE');
       expect(seen[0]).toMatch(/\/flights\/number\/BR198\/2026-12-01/);
+    });
+
+    // By default the API counts a flight arriving on that date too. One that crosses
+    // midnight then answers for the day before: a search for the 12th gave the 11th.
+    test('asks for flights leaving on that date, not arriving on it', async () => {
+      const seen: string[] = [];
+      const port = createAeroDataBoxPort('key', fakeFetch([leg('TPE')], seen));
+      await port.fetchFlightStatus('BR198', '2026-12-01', 'TPE');
+      expect(seen[0]).toContain('dateLocalRole=Departure');
     });
 
     // A flight saved off a ticket before the padding was dropped still has it.

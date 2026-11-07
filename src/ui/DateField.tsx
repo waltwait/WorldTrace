@@ -5,11 +5,20 @@
  * dialogs: it takes the theme. What a month holds is calendar.ts, which is tested.
  */
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Modal, Pressable, StyleSheet, View } from 'react-native';
-import { monthOf, monthWeeks, shiftMonth, todayString, yearPage, type Month } from './calendar';
+import {
+  monthOf,
+  monthWeeks,
+  shiftMonth,
+  todayString,
+  withYear,
+  yearPage,
+  type Month,
+} from './calendar';
 import { Icon } from './Icon';
 import { PressScale } from './PressScale';
+import { SwapText } from './SwapText';
 import { useStyles, useTheme } from './ThemeProvider';
 import { FONT, radius, type Theme } from './themes';
 import { Text } from './Text';
@@ -35,29 +44,28 @@ export function DateField({
       <Text style={styles.label}>{label}</Text>
       <PressScale style={styles.box} onPress={() => setOpen(true)} label={label}>
         <Text style={value ? styles.value : styles.placeholder} numberOfLines={1}>
-          {value || placeholder}
+          {value || placeholder || ''}
         </Text>
       </PressScale>
-      <Calendar
-        visible={open}
-        value={value}
-        onClose={() => setOpen(false)}
-        onPick={(date) => {
-          onChange(date);
-          setOpen(false);
-        }}
-      />
+      {open ? (
+        <Calendar
+          value={value}
+          onClose={() => setOpen(false)}
+          onPick={(date) => {
+            onChange(date);
+            setOpen(false);
+          }}
+        />
+      ) : null}
     </View>
   );
 }
 
 function Calendar({
-  visible,
   value,
   onClose,
   onPick,
 }: {
-  visible: boolean;
   value: string;
   onClose: () => void;
   onPick: (date: string) => void;
@@ -68,16 +76,6 @@ function Calendar({
   const [choosingYear, setChoosingYear] = useState(false);
   const [yearFrom, setYearFrom] = useState(shown.year);
 
-  // Each opening starts from what is in the box, not from wherever the last one
-  // was left.
-  useEffect(() => {
-    if (!visible) return;
-    const month = monthOf(value, new Date());
-    setShown(month);
-    setYearFrom(month.year);
-    setChoosingYear(false);
-  }, [visible, value]);
-
   const years = yearPage(yearFrom);
   const today = todayString(new Date());
 
@@ -87,7 +85,14 @@ function Calendar({
   };
 
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+    <Modal
+      visible
+      transparent
+      animationType="fade"
+      statusBarTranslucent
+      navigationBarTranslucent
+      onRequestClose={onClose}
+    >
       <View style={styles.scrim}>
         <Pressable style={StyleSheet.absoluteFill} onPress={onClose} accessibilityLabel="關閉" />
         <View style={styles.card}>
@@ -96,17 +101,21 @@ function Calendar({
               <Icon name="back" color={t.ink} size={20} />
             </PressScale>
             <PressScale onPress={() => setChoosingYear((v) => !v)} hitSlop={8}>
-              <Text style={styles.title}>
-                {choosingYear
-                  ? `${years[0]} – ${years[years.length - 1]}`
-                  : `${shown.year} 年 ${shown.month} 月`}
-              </Text>
+              <SwapText
+                text={
+                  choosingYear
+                    ? `${years[0]} – ${years[years.length - 1]}`
+                    : `${shown.year} 年 ${shown.month} 月`
+                }
+                style={styles.title}
+              />
             </PressScale>
             <PressScale style={styles.arrow} onPress={() => step(1)} label="往後" hitSlop={6}>
               <Icon name="chevronRight" color={t.ink} size={20} />
             </PressScale>
           </View>
 
+          <View style={styles.body}>
           {choosingYear ? (
             <View style={styles.years}>
               {years.map((year) => (
@@ -115,6 +124,12 @@ function Calendar({
                   containerStyle={styles.yearSlot}
                   style={[styles.year, year === shown.year && styles.on]}
                   onPress={() => {
+                    // A day is already chosen, so a year is all there is left to say.
+                    const moved = withYear(value, year);
+                    if (moved) {
+                      onPick(moved);
+                      return;
+                    }
                     setShown({ year, month: shown.month });
                     setChoosingYear(false);
                   }}
@@ -159,6 +174,7 @@ function Calendar({
               ))}
             </>
           )}
+          </View>
         </View>
       </View>
     </Modal>
@@ -210,6 +226,8 @@ const make = (t: Theme) =>
     },
     title: { color: t.ink, fontFamily: FONT.bold, fontSize: 17 },
 
+    // Six weeks and their heading, whichever page is showing, so nothing jumps.
+    body: { height: 300 },
     week: { flexDirection: 'row' },
     weekday: { flex: 1, color: t.muted, fontSize: 13, textAlign: 'center', paddingVertical: 6 },
     daySlot: { flex: 1, height: 44, alignItems: 'center', justifyContent: 'center' },
@@ -219,7 +237,7 @@ const make = (t: Theme) =>
     dayText: { color: t.ink, fontFamily: FONT.bold, fontSize: 15 },
     onText: { color: '#FFFFFF' },
 
-    years: { flexDirection: 'row', flexWrap: 'wrap' },
-    yearSlot: { width: '33.33%', padding: 4 },
-    year: { height: 48, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
+    years: { flex: 1, flexDirection: 'row', flexWrap: 'wrap' },
+    yearSlot: { width: '33.33%', height: '25%', padding: 4 },
+    year: { flex: 1, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
   });

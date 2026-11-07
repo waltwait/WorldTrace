@@ -60,6 +60,18 @@ function isOver(flight: FlightRecord): boolean {
   return flight.isFinished || flight.status === 'CANCELLED';
 }
 
+/**
+ * A flight is over once it has left, unless it was cancelled. Worked out on reading
+ * and never stored: the polls go on until a day past the arrival, so a cancellation
+ * they find afterwards still takes the flight out of the passport.
+ */
+export function settleDeparted(flights: readonly FlightRecord[], now: number): FlightRecord[] {
+  return flights.map((flight) => {
+    const left = now >= (flight.depEstimatedUtc ?? flight.depScheduledUtc);
+    return left && !isOver(flight) ? { ...flight, isFinished: true } : flight;
+  });
+}
+
 /** Still to fly, the next one first: that is the one being looked for. */
 export function upcomingFlights(flights: readonly FlightRecord[]): FlightRecord[] {
   return flights

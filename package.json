@@ -13,6 +13,7 @@
     "expo-image-manipulator": "~57.0.22",
     "expo-image-picker": "~57.0.21",
     "expo-location": "~57.0.7",
+    "expo-notifications": "~57.0.25",
     "expo-secure-store": "~57.0.4",
     "expo-sharing": "~57.0.8",
     "expo-sqlite": "~57.0.1",
@@ -21,7 +22,8 @@
     "expo-text-extractor": "^2.0.0",
     "react": "19.2.3",
     "react-native": "0.86.2",
-    "react-native-svg": "15.15.4"
+    "react-native-svg": "15.15.4",
+    "react-native-view-shot": "5.1.0"
   },
   "devDependencies": {
     "@types/node": "^26.1.2",
