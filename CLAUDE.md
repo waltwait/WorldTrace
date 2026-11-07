@@ -55,8 +55,16 @@ src/flights/     flights, kept apart from the track: the add form (flightForm),
                  (readTicket, ticketFacts), lookup and status polling
                  (flightStatusApi), great-circle arcs, passport stats
 src/settings/    API keys: entered on the settings page, kept in the Keystore
-src/ui/          screens, formatting, the app's own dialog
+src/ui/          screens, themes, formatting, the app's own dialog
 ```
+
+Four pages under a floating toolbar, 總覽, 足跡, 航班, 設定, with ＋ for a new
+flight on any of them (`ui/Toolbar.tsx`). They sit in a horizontal `ScrollView` in
+`App.tsx`, so a swipe follows the finger on the UI thread even while the fog holds
+the JS thread; `ui/pager.ts` says which page a position is. What opens over them:
+探索 from the numbers on 總覽, 飛行護照 from its card on 總覽, a flight's detail, and
+the add sheet. Backup, restore, export and redrawing the fog are all
+in 設定.
 
 **The ports pattern is what keeps this testable.** `SqlDriver`
 (`store/driver.ts`) is backed by expo-sqlite on device and by Node's built-in
@@ -68,7 +76,7 @@ tested.
 ## Commands
 
 ```bash
-npm test                 # ~480 tests, ~3s
+npm test                 # ~960 tests, ~3s
 npm run typecheck
 cd android && JAVA_HOME=$HOME/.jdks/jdk-17.0.20+8/Contents/Home \
   ANDROID_HOME=/opt/homebrew/share/android-commandlinetools ./gradlew assembleRelease
@@ -211,6 +219,13 @@ quietly wrong.
 - **Two callers who arrive together both run the scan.** A cache of finished
   answers does nothing for concurrent calls; `store/sharedRead.ts` caches the
   promise instead.
+- **A shared object nothing refers to can be collected in the middle of its own
+  work.** `ImageManipulator.manipulate(uri).rotate(d).renderAsync()` leaves JS with
+  no reference to the context, and on Android releasing a context cancels its
+  render: "Context.renderAsync has been rejected", whenever a collection fell during
+  the render. It passed every test on the phone until more JS was running. Keep the
+  reference and release it afterwards (`turnedCopy` in `flights/readTicket.ts`), and
+  the same goes for anything else from `expo-modules-core`'s `SharedObject`.
 - **MapLibre RN v11 defaults Android to GLSurfaceView**, which renders the map
   mirrored on this device. Use `androidView="texture"`.
 - **`src/app/` collides with Expo Router's convention.** Hence `src/ui/`.
@@ -254,6 +269,13 @@ quietly wrong.
   `store/flights.ts` joins them, so nothing else knows there are three. A flight
   is looked up by number and date however it was entered; the airports, times and
   zones are typed by hand only when nothing was found.
+- The API answers for dates within a year either way, on every plan, and refuses
+  the rest with a 400. An older flight is looked up on the same weekday near the same
+  date this year, then that date, then the last such weekday (`flights/flightLookup.ts`),
+  and moved onto its own date, for the route, country and distance a passport needs.
+  Its times are another day's, so its `source` is `nearby`, the detail page says so,
+  and the form says so before it is saved. The one exception to a flight carrying only
+  what was typed or read, and the user's call: a number may have changed route since.
 - There is no table of airports. City, country, position and zone come from the
   status API and are kept on the flight, so a flight typed by hand has none of
   them: no arc, no distance, no stamp. Cities read in English, as the API gives
@@ -262,9 +284,13 @@ quietly wrong.
 - The flight tables migrate on the screens' connection only (`migrate`); the
   background task runs `migrateTrack`. Two connections changing them at once
   could fail, and on that one it would stop recording without a word.
+- ML Kit reads the zero of a padded flight number as the letter O (`BRO117/21JUN`),
+  on every turn of the picture. Vision on a Mac reads it correctly, so a ticket is not
+  tested until it has been through the phone. The O is only forgiven with a date
+  behind it, or a booking code could pass for a flight.
 - Tickets often print no year. `flights/ticketYear.ts` works it out, from a
   printed weekday if there is one; without one the form says it is a guess.
-- The flight API key is entered on 我的 › 設定 and kept in the Android Keystore
+- The flight API key is entered on 設定 and kept in the Android Keystore
   (`settings/`), never in the database, a backup or the bundle: `EXPO_PUBLIC_`
   values are written into the APK in plain text and releases are public. The
   Google web client ID stays in `.env.local`: it is public, and tied to the
@@ -275,6 +301,47 @@ quietly wrong.
   tapped flight card, with every test green.
 - The map stays north-up (`trackUserLocation="default"`). A rotating fog map is
   much harder to read.
+- There is one map, `ui/FogMap.tsx`, and it lives in the tile on 總覽. It is always
+  the size of the screen and the tile shows the middle of it (`ui/mapCrop.ts`), so
+  opening it uncovers what is already drawn. Growing the map instead rebuilt its
+  surface and, with a wider view than the fog served, redrew the fog too. Opening
+  changes the style of the view around it rather than moving it: a new view would
+  tear down MapLibre's native map and start the fog again. Anything the tile shows
+  over the map belongs to `ui/OverviewScreen.tsx`, since `FogMap`'s own overlays are
+  placed on the whole screen and would sit outside the tile. Following the user
+  makes the map draw every frame, so it stops while nobody can see the map (`active`). Reviewing a day and viewing a flight both go through that same map. For
+  the same reason 總覽 does not scroll.
+- Colours come from the theme, never from a literal: `ui/themes.ts` holds them and
+  their contrast is pinned in `themes.test.ts`. A style sheet is
+  `const make = (t: Theme) => StyleSheet.create({...})` at module level, read with
+  `useStyles(make)`. The choice is kept in `theme.json` beside the database, for
+  the same reason as the export folder. No dark mode yet.
+- Text is set in Noto Sans TC, and figures in Sora: distances, times, airport codes,
+  as the design has them. React Native has no default font, a `fontWeight` picks no
+  file on Android, and Sora has no Chinese, so every screen takes `Text` and
+  `TextInput` from `ui/Text.tsx`, which works all of that out (`ui/fonts.ts`); a test
+  reads the source for any screen that does not. Animated text cannot go through it
+  and calls `textStyle` itself. A style in Sora names `FONT` and sets no `fontWeight`.
+  An input holds one font, so a field typed in Chinese says `chinese`. This phone is
+  set to a handwriting face, which is what anything missed comes out in. The files
+  are in `assets/fonts/` and listed in `app.json`, but prebuild is what copies them,
+  so a new one also has to go into `android/app/src/main/assets/fonts/` by hand.
+  Nothing crashes if it does not: the phone's font is drawn instead, which is why
+  `tools/release.sh` checks the APK.
+- The Noto files are edited. `tools/fonts/center_noto_line_box.py` moves the line box so Chinese sits in
+  the middle of it: as shipped it sits 0.5 to 1 dp low in every button and pill.
+  `tools/fonts/strip_emoji_presentation.py` takes out the characters that should come
+  in colour from the phone: Noto's black-and-white 🆕 would win. Replacing a file
+  undoes both without a word, so run both again; `ui/themes.test.ts` reads the files
+  and goes red if not. Then copy them into `android/` as above.
+- 飛行護照 (`ui/PassportScreen.tsx`) counts flights flown and nothing else, the
+  same as the fog, and everything it says comes from `flights/flightStats.ts`.
+  Years go by the date on the ticket, not UTC. It stays about flying: 探索 is
+  about walking.
+- Dates are chosen from the app's own calendar (`ui/DateField.tsx`,
+  `ui/calendar.ts`), not typed and not the system's picker, so it takes the theme.
+- Tickets are read from pictures only. There is no pasting of text: the user took
+  it out.
 - Exports can be shared or saved to a folder (`export/saveToFolder.ts`). Android
   will not let an app write to Downloads itself, only to a folder the user picked
   inside it, once, through the system picker; the app keeps the grant. The choice
@@ -323,20 +390,23 @@ quietly wrong.
   been tried on the phone: the system picker, the write into a document folder
   and whether the file keeps its name and extension are all the part a test
   cannot reach.
-- The press, busy and confirmation animations on the backup page and the
-  timeline have passed their tests and bundle cleanly but have not been watched
-  running on the phone.
+- The press, busy and confirmation animations on 設定 and 足跡 have passed their
+  tests and bundle cleanly but have not been watched running on the phone.
 - Flight tickets and boarding passes are kept in `flight-docs/` beside the
   database, not in it (`store/flightDocs.ts`), so a Drive backup or a snapshot
   carries the rows but not the files: after a restore onto another phone a
   document is listed and will not open. Documents attached before they were
   copied out of the picker's cache may already be gone.
 - Ticket reading has been tried on the two sample pictures with Apple Vision on
-  a Mac, not with ML Kit on the phone, and the flight lookup has never had a real
-  answer from AeroDataBox: `scheduledTime.local` is from memory of its schema.
-  ML Kit here reads Latin script only, so 「12月31日」 may not be read. Which
-  airport fields the answer really carries (`municipalityName`, `countryCode`,
-  `timeZone`, `location`, `greatCircleDistance`) is unconfirmed for the same reason.
+  a Mac, not with ML Kit on the phone, and the flight lookup has only been seen
+  working once, for JX871: the route, time and arc were right.
+  ML Kit here reads Latin script only, so 「12月31日」 may not be read. The fields the code reads all appear in
+  the published OpenAPI (doc.aerodatabox.com), which says what may come back, not
+  what does for a given airport.
+- A status poll that gets no answer is not stamped as synced, so a flight the API
+  has nothing on is asked about again on every launch. The free plan is 400 units
+  a month and this endpoint costs 2, so 200 calls: enough for normal use, but a
+  mistyped flight number would quietly spend it.
 - Every fog change still reloads all tile BLOBs (`loadAllTiles`) and recomputes
   the area; the viewport work only bounds tracing and rendering.
 - Published at https://github.com/waltwait/WorldTrace. `android/`, `docs/`,

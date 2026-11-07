@@ -10,6 +10,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Animated, Easing, type StyleProp, type TextStyle } from 'react-native';
 import { countUpValue, CURVE, DURATION, shouldCount, shouldFlip, SWAP_OFFSET } from './motion';
 import { useReducedMotion } from './useReducedMotion';
+import { textStyle } from './Text';
 
 /**
  * A number that counts to its value, with a vertical flip impulse on live ticks.
@@ -148,7 +149,7 @@ export function RollingNumber({
 
   return (
     <Animated.Text
-      style={[style, { opacity: flipOpacity, transform: [{ translateY: flipY }] }]}
+      style={[textStyle(style), { opacity: flipOpacity, transform: [{ translateY: flipY }] }]}
       numberOfLines={1}
       adjustsFontSizeToFit={fit}
       minimumFontScale={fit ? 0.6 : undefined}

@@ -1,5 +1,15 @@
 import { describe, expect, test } from 'vitest';
-import { computePassportStats, topAirline } from './flightStats';
+import {
+  airportCity,
+  computePassportStats,
+  countryStamps,
+  flightsInYear,
+  flownYears,
+  longestFlight,
+  rankAirlines,
+  rankRoutes,
+  timesAroundEarth,
+} from './flightStats';
 import type { FlightRecord } from './types';
 
 function createMockFlight(overrides: Partial<FlightRecord>): FlightRecord {
@@ -105,16 +115,6 @@ describe('flightStats', () => {
     expect(stats.totalHours).toBe(1.0);
     expect(stats.visitedCountryCodes).not.toContain('GB');
   });
-
-  test('the top airline is the one flown most, not the one booked most', () => {
-    const flights = [
-      createMockFlight({ id: 'a', airlineName: 'EVA Air', isFinished: true }),
-      createMockFlight({ id: 'b', airlineName: 'Starlux', isFinished: false }),
-      createMockFlight({ id: 'c', airlineName: 'Starlux', isFinished: false }),
-    ];
-    expect(topAirline(flights)).toEqual({ name: 'EVA Air', count: 1 });
-    expect(topAirline([flights[1]])).toBeNull();
-  });
 });
 
 // Marking it finished, by hand or by mistake, does not mean it was flown.
@@ -123,7 +123,7 @@ test('a cancelled flight is not a flight flown, finished or not', () => {
 
   expect(computePassportStats([cancelled]).totalFlights).toBe(0);
   expect(computePassportStats([cancelled]).visitedCountriesCount).toBe(0);
-  expect(topAirline([cancelled])).toBeNull();
+  expect(rankAirlines([cancelled])).toEqual([]);
 });
 
 // Typed in by hand, a flight has neither: it still counts, without inventing them.
@@ -135,4 +135,159 @@ test('a flight with no country or distance counts as a flight and adds no stamp'
   expect(stats.totalFlights).toBe(1);
   expect(stats.totalKm).toBe(0);
   expect(stats.visitedCountryCodes).toEqual([]);
+});
+
+describe('the years of a passport', () => {
+  const flights = [
+    createMockFlight({ id: 'a', depDate: '2025-03-01' }),
+    createMockFlight({ id: 'b', depDate: '2027-01-02' }),
+    createMockFlight({ id: 'c', depDate: '2025-08-09' }),
+    createMockFlight({ id: 'd', depDate: '2028-01-01', isFinished: false }),
+  ];
+
+  test('are those flown in, newest first, once each', () => {
+    expect(flownYears(flights)).toEqual(['2027', '2025']);
+  });
+
+  test('narrow the flights to one', () => {
+    expect(flightsInYear(flights, '2025').map((f) => f.id)).toEqual(['a', 'c']);
+  });
+
+  test('take every flight when no year is chosen', () => {
+    expect(flightsInYear(flights, null)).toBe(flights);
+  });
+
+  // Taken from the departure date, which is on the airport's clocks: a flight
+  // leaving Taipei at 07:00 on New Year's Day is still 2026 in UTC.
+  test('go by the date on the ticket, not by UTC', () => {
+    const newYear = createMockFlight({
+      depDate: '2027-01-01',
+      depScheduledUtc: Date.UTC(2026, 11, 31, 23, 0),
+    });
+
+    expect(flownYears([newYear])).toEqual(['2027']);
+  });
+});
+
+describe('countryStamps', () => {
+  const tokyo = createMockFlight({
+    id: 'out',
+    depCountry: 'TW',
+    arrCountry: 'JP',
+    depDate: '2026-03-01',
+  });
+  const home = createMockFlight({
+    id: 'back',
+    depCountry: 'JP',
+    arrCountry: 'TW',
+    depDate: '2026-03-08',
+  });
+  const singapore = createMockFlight({
+    id: 'sg',
+    depCountry: 'TW',
+    arrCountry: 'SG',
+    depDate: '2025-06-01',
+  });
+
+  test('gives each country the flights that touched it, the most first', () => {
+    const stamps = countryStamps([singapore, tokyo, home]);
+
+    expect(stamps.map((s) => s.code)).toEqual(['TW', 'JP', 'SG']);
+    expect(stamps[1].flights.map((f) => f.id)).toEqual(['back', 'out']);
+  });
+
+  test('lists a country\'s flights newest first', () => {
+    expect(countryStamps([tokyo, home])[0].flights.map((f) => f.id)).toEqual(['back', 'out']);
+  });
+
+  test('counts a domestic flight once', () => {
+    const domestic = createMockFlight({ depCountry: 'JP', arrCountry: 'JP' });
+
+    expect(countryStamps([domestic])[0].flights).toHaveLength(1);
+  });
+
+  test('says when the country was first reached', () => {
+    expect(countryStamps([singapore, tokyo, home])[0].firstDate).toBe('2025-06-01');
+  });
+
+  test('has no stamp for a flight nobody flew', () => {
+    expect(countryStamps([{ ...tokyo, isFinished: false }])).toEqual([]);
+  });
+
+  test('has no stamp for a country nobody named', () => {
+    expect(countryStamps([createMockFlight({ depCountry: null, arrCountry: null })])).toEqual([]);
+  });
+});
+
+describe('rankAirlines', () => {
+  test('puts the one flown most first, not the one booked most', () => {
+    const flights = [
+      createMockFlight({ id: 'a', airlineName: 'EVA Air' }),
+      createMockFlight({ id: 'b', airlineName: 'Starlux', isFinished: false }),
+      createMockFlight({ id: 'c', airlineName: 'Starlux', isFinished: false }),
+    ];
+
+    expect(rankAirlines(flights)).toEqual([{ name: 'EVA Air', count: 1 }]);
+  });
+
+  test('falls back on the code when there is no name', () => {
+    expect(rankAirlines([createMockFlight({ airlineName: '', airlineCode: 'BR' })])).toEqual([
+      { name: 'BR', count: 1 },
+    ]);
+  });
+});
+
+describe('rankRoutes', () => {
+  // There and back is one route flown twice, not two routes flown once.
+  test('counts a route the same in both directions', () => {
+    const flights = [
+      createMockFlight({ id: 'a', depIata: 'TPE', arrIata: 'NRT' }),
+      createMockFlight({ id: 'b', depIata: 'NRT', arrIata: 'TPE' }),
+      createMockFlight({ id: 'c', depIata: 'TPE', arrIata: 'SIN' }),
+    ];
+
+    expect(rankRoutes(flights)).toEqual([
+      { from: 'NRT', to: 'TPE', count: 2 },
+      { from: 'SIN', to: 'TPE', count: 1 },
+    ]);
+  });
+});
+
+describe('longestFlight', () => {
+  test('is the one that went furthest', () => {
+    const flights = [
+      createMockFlight({ id: 'near', distanceKm: 640 }),
+      createMockFlight({ id: 'far', distanceKm: 9_800 }),
+    ];
+
+    expect(longestFlight(flights)?.id).toBe('far');
+  });
+
+  test('passes over a distance nobody knows', () => {
+    expect(longestFlight([createMockFlight({ distanceKm: null })])).toBeNull();
+  });
+
+  test('passes over a flight nobody flew', () => {
+    expect(longestFlight([createMockFlight({ isFinished: false })])).toBeNull();
+  });
+});
+
+describe('airportCity', () => {
+  const flights = [createMockFlight({ depIata: 'TPE', depCity: 'Taipei', arrIata: 'NRT', arrCity: 'Tokyo' })];
+
+  test('comes from a flight that used the airport, at either end', () => {
+    expect(airportCity(flights, 'TPE')).toBe('Taipei');
+    expect(airportCity(flights, 'NRT')).toBe('Tokyo');
+  });
+
+  test('is unknown when no flight says', () => {
+    expect(airportCity(flights, 'SIN')).toBeNull();
+  });
+});
+
+describe('timesAroundEarth', () => {
+  test('measures the distance against the equator', () => {
+    expect(timesAroundEarth(40_075)).toBeCloseTo(1);
+    expect(timesAroundEarth(100_187.5)).toBeCloseTo(2.5);
+  });
 });

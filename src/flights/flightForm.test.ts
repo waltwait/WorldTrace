@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import {
   buildFlightFromForm,
+  cleanFlightNumber,
   editForm,
   EMPTY_FLIGHT_FORM,
   formFromTicket,
@@ -123,6 +124,19 @@ describe('a flight that was looked up', () => {
 
   test('needs nothing else typed', () => {
     expect(() => built(form({ lookedUp: oka }))).not.toThrow();
+  });
+});
+
+describe('a flight whose date was too old to look up', () => {
+  const borrowed = { ...oka, borrowed: true };
+
+  // Its route and times are another day's, and it has to be possible to tell.
+  test('says they were borrowed', () => {
+    expect(built(form({ lookedUp: borrowed })).scheduleSource).toBe('nearby');
+  });
+
+  test('a flight looked up on its own date does not', () => {
+    expect(built(form({ lookedUp: oka })).scheduleSource).toBe('api');
   });
 });
 
@@ -310,5 +324,29 @@ describe('legsFoundMessage', () => {
     expect(legsFoundMessage([{ flightNumber: 'BR198' }, { flightNumber: 'BR197' }])).toBe(
       '已辨識 2 段航班',
     );
+  });
+});
+
+describe('cleanFlightNumber', () => {
+  test('tidies what was typed', () => {
+    expect(cleanFlightNumber(' br 198 ')).toBe('BR198');
+  });
+
+  // Tickets pad the number to four digits, and the flight is not called that.
+  test('drops the padding', () => {
+    expect(cleanFlightNumber('BR0117')).toBe('BR117');
+    expect(cleanFlightNumber('CI0005')).toBe('CI5');
+  });
+
+  test('keeps a zero inside the number', () => {
+    expect(cleanFlightNumber('BR1008')).toBe('BR1008');
+  });
+
+  test('takes an airline code with a digit in it', () => {
+    expect(cleanFlightNumber('3K0701')).toBe('3K701');
+  });
+
+  test('leaves something to look up', () => {
+    expect(cleanFlightNumber('CI000')).toBe('CI0');
   });
 });

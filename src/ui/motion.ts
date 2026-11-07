@@ -47,12 +47,6 @@ export const CURVE = {
   move: [0.25, 1, 0.5, 1],
 } as const;
 
-/**
- * How far the page being left behind dims during a slide. Enough to read as
- * receding, not so much that half the screen goes dark mid-transition.
- */
-export const PAGE_DIM = 0.85;
-
 export const STAGGER = {
   step: 30,
   /** Beyond this the entrance already reads as staggered, and waiting longer

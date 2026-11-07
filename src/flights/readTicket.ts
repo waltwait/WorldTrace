@@ -42,21 +42,70 @@ export async function readTicket(
   now: number,
 ): Promise<TicketFacts[]> {
   let best: TicketFacts[] = [];
+  let failure: unknown = null;
 
   try {
     for (const turn of TURNS) {
-      const image = turn === 0 ? uri : await reader.rotate(uri, turn);
+      // One turn failing says nothing about the others, or about what was already
+      // read: it used to throw all of that away.
       try {
-        const tickets = extractTickets(await reader.read(image), now);
+        const tickets = await readTurn(reader, uri, turn, now);
         if (score(tickets) > score(best)) best = tickets;
         if (score(best) === EVERYTHING) break;
-      } finally {
-        if (image !== uri) reader.discard(image);
+      } catch (error) {
+        failure ??= error;
       }
     }
+
+    if (best.length === 0 && failure !== null) throw failure;
     return best;
   } finally {
     reader.discard(uri);
+  }
+}
+
+async function readTurn(
+  reader: TicketImageReader,
+  uri: string,
+  turn: number,
+  now: number,
+): Promise<TicketFacts[]> {
+  const image = turn === 0 ? uri : await reader.rotate(uri, turn);
+  try {
+    return extractTickets(await reader.read(image), now);
+  } finally {
+    if (image !== uri) reader.discard(image);
+  }
+}
+
+interface Releasable {
+  release(): void;
+}
+
+/**
+ * A turned copy of a picture, from an image manipulator's context.
+ *
+ * The context has to outlive the render. Android cancels a render when its context
+ * is released, and the garbage collector releases one nothing refers to, which is
+ * all a chain ending in renderAsync leaves: "Context.renderAsync has been rejected",
+ * whenever a collection fell during the render. Releasing it afterwards keeps the
+ * reference alive until then, and hands the bitmap back sooner besides.
+ */
+export async function turnedCopy<Image extends Releasable>(
+  context: Releasable & { rotate(degrees: number): unknown; renderAsync(): Promise<Image> },
+  degrees: number,
+  save: (image: Image) => Promise<{ uri: string }>,
+): Promise<string> {
+  try {
+    context.rotate(degrees);
+    const image = await context.renderAsync();
+    try {
+      return (await save(image)).uri;
+    } finally {
+      image.release();
+    }
+  } finally {
+    context.release();
   }
 }
 

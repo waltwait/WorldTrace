@@ -1,27 +1,36 @@
-import { memo, useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, FlatList, StyleSheet, Text, View } from 'react-native';
+import { memo, useCallback, useEffect, useMemo, useState } from 'react';
+import { ActivityIndicator, SectionList, StyleSheet, View } from 'react-native';
 import type { TrackSegment } from '../export/gpx';
 import { database } from '../store/database';
 import { getCachedDays, listDays, loadTrack, type TrackDay } from '../store/track';
-import { FadeIn } from './FadeIn';
-import { staggerDelay } from './motion';
+import { Icon } from './Icon';
 import { PressScale } from './PressScale';
-import { radius, theme } from './theme';
+import { useStyles, useTheme } from './ThemeProvider';
+import { radius, TOOLBAR_CLEARANCE, type Theme } from './themes';
+import { dayTitle, groupDaysByMonth, timeSpan } from './trackDays';
+import { Text } from './Text';
 
 export interface TimelineScreenProps {
   /** Hand a day's track to the map for review. */
   onSelectDay: (label: string, segments: TrackSegment[]) => void;
-  hideTitle?: boolean;
+  /** Whether this is the page being looked at. */
+  active: boolean;
 }
 
 export const TimelineScreen = memo(function TimelineScreen({
   onSelectDay,
-  hideTitle = false,
+  active,
 }: TimelineScreenProps) {
+  const styles = useStyles(make);
+  const t = useTheme();
   const [days, setDays] = useState<TrackDay[] | null>(() => getCachedDays());
   const [busy, setBusy] = useState<string | null>(null);
 
+  // Every time the page comes back rather than once: it stays mounted, and a day
+  // walked since it opened would otherwise not be there.
   useEffect(() => {
+    if (!active) return;
+
     let cancelled = false;
 
     (async () => {
@@ -33,7 +42,7 @@ export const TimelineScreen = memo(function TimelineScreen({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [active]);
 
   const open = useCallback(
     async (day: TrackDay) => {
@@ -41,7 +50,7 @@ export const TimelineScreen = memo(function TimelineScreen({
       try {
         const driver = await database();
         const segments = await loadTrack(driver, { from: day.from, to: day.to });
-        onSelectDay(day.date, segments);
+        onSelectDay(dayTitle(day.date, new Date()), segments);
       } finally {
         setBusy(null);
       }
@@ -49,112 +58,85 @@ export const TimelineScreen = memo(function TimelineScreen({
     [onSelectDay],
   );
 
-  const renderDay = useCallback(
-    ({ item: day, index }: { item: TrackDay; index: number }) => {
-      const row = (
-        <PressScale style={styles.day} onPress={() => void open(day)}>
-          <View style={styles.dayText}>
-            <Text style={styles.dayDate}>{day.date}</Text>
-            <Text style={styles.dayMeta}>
-              {day.pointCount} 個定位點 · {formatSpan(day.from, day.to)}
-            </Text>
-          </View>
-          <View style={styles.dayEnd}>
-            {busy === day.date ? (
-              <ActivityIndicator size="small" color={theme.accent} />
-            ) : (
-              <Text style={styles.chevron}>›</Text>
-            )}
-          </View>
-        </PressScale>
-      );
-
-      // Only the first screenful arrives with a flourish. Rows further down are
-      // made as they scroll into reach, and animating each of those would be a
-      // new animation for every swipe.
-      return index < ANIMATED_ROWS ? (
-        <FadeIn delay={staggerDelay(index)}>{row}</FadeIn>
-      ) : (
-        row
-      );
-    },
-    [busy, open],
-  );
+  const sections = useMemo(() => groupDaysByMonth(days ?? [], new Date()), [days]);
 
   // A list, not a column of every day: a year of daily walks is hundreds of
-  // cards, and building them all at once put them all on the JS thread at the
+  // rows, and building them all at once put them all on the JS thread at the
   // moment the tab opened.
   return (
-    <FlatList
+    <SectionList
       style={styles.screen}
-      contentContainerStyle={[styles.content, hideTitle && styles.contentCompact]}
-      data={days ?? []}
+      contentContainerStyle={styles.content}
+      sections={sections}
       keyExtractor={(day) => day.date}
-      renderItem={renderDay}
       extraData={busy}
-      ItemSeparatorComponent={Separator}
-      initialNumToRender={ANIMATED_ROWS}
+      stickySectionHeadersEnabled={false}
+      initialNumToRender={12}
       windowSize={7}
       maxToRenderPerBatch={8}
       ListHeaderComponent={
-        <View style={[styles.header, hideTitle && styles.headerCompact]}>
-          {!hideTitle ? <Text style={styles.title}>時間軸</Text> : null}
-
+        <View style={styles.header}>
+          <Text style={styles.title}>足跡</Text>
           {days === null ? <Text style={styles.hint}>讀取中…</Text> : null}
-
-          {days?.length === 0 ? (
-            <Text style={styles.hint}>還沒有任何記錄</Text>
-          ) : null}
+          {days?.length === 0 ? <Text style={styles.hint}>還沒有任何記錄</Text> : null}
         </View>
       }
+      renderSectionHeader={({ section }) => <Text style={styles.month}>{section.title}</Text>}
+      renderItem={({ item: day, index, section }) => (
+        <PressScale
+          style={[
+            styles.day,
+            index === 0 && styles.dayFirst,
+            index === section.data.length - 1 && styles.dayLast,
+          ]}
+          onPress={() => void open(day)}
+        >
+          <View>
+            <Text style={styles.dayTitle}>{dayTitle(day.date, new Date())}</Text>
+            <Text style={styles.daySpan}>{timeSpan(day.from, day.to)}</Text>
+          </View>
+          {busy === day.date ? (
+            <ActivityIndicator size="small" color={t.muted} />
+          ) : (
+            <Icon name="chevronRight" color={t.muted} size={18} />
+          )}
+        </PressScale>
+      )}
     />
   );
 });
 
-const ANIMATED_ROWS = 12;
-
-function Separator() {
-  return <View style={styles.separator} />;
-}
-
-function formatSpan(from: number, to: number): string {
-  const time = (ms: number) => {
-    const d = new Date(ms);
-    return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-  };
-  return `${time(from)}–${time(to)}`;
-}
-
-const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: theme.background },
-  content: { padding: 20, paddingTop: 64, paddingBottom: 40 },
-  contentCompact: { paddingTop: 12 },
-  header: { gap: 10, marginBottom: 14 },
-  headerCompact: { marginBottom: 6 },
-  separator: { height: 10 },
-  title: { color: theme.text, fontSize: 26, fontWeight: '700', marginBottom: 4 },
-  hint: { color: theme.textFaint, fontSize: 13, lineHeight: 20 },
-
-  day: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    padding: 16,
-    borderRadius: radius.card,
-    backgroundColor: theme.surfaceSolid,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.border,
-  },
-  dayText: { gap: 3 },
-  dayDate: {
-    color: theme.text,
-    fontSize: 15,
-    fontWeight: '600',
-    fontVariant: ['tabular-nums'],
-  },
-  dayMeta: { color: theme.textFaint, fontSize: 11, fontVariant: ['tabular-nums'] },
-  // The same width whether it holds the words or the spinner, so the row does not
-  // change shape when a day is tapped.
-  dayEnd: { minWidth: 76, height: 20, alignItems: 'flex-end', justifyContent: 'center' },
-  chevron: { color: theme.accent, fontSize: 18 },
-});
+const make = (t: Theme) =>
+  StyleSheet.create({
+    screen: { flex: 1, backgroundColor: t.ground },
+    content: { paddingHorizontal: 16, paddingTop: 56, paddingBottom: TOOLBAR_CLEARANCE + 16 },
+    header: { gap: 8, paddingHorizontal: 6, marginBottom: 8 },
+    title: { color: t.ink, fontSize: 34, fontWeight: '900' },
+    hint: { color: t.muted, fontSize: 15 },
+    month: {
+      color: t.muted,
+      fontSize: 14,
+      paddingHorizontal: 8,
+      paddingTop: 14,
+      paddingBottom: 8,
+    },
+    day: {
+      minHeight: 62,
+      paddingHorizontal: 16,
+      paddingVertical: 10,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      backgroundColor: t.soft,
+      borderTopWidth: 1,
+      borderTopColor: t.ground,
+    },
+    dayFirst: {
+      borderTopWidth: 0,
+      borderTopLeftRadius: radius.group,
+      borderTopRightRadius: radius.group,
+    },
+    dayLast: { borderBottomLeftRadius: radius.group, borderBottomRightRadius: radius.group },
+    dayTitle: { color: t.ink, fontSize: 16, fontWeight: '700' },
+    daySpan: { color: t.muted, fontSize: 13, marginTop: 2 },
+  });

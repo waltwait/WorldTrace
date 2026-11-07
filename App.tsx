@@ -1,32 +1,36 @@
 import { StatusBar } from 'expo-status-bar';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  Animated,
   AppState,
-  Easing,
-  Pressable,
+  BackHandler,
+  ScrollView,
   StyleSheet,
-  Text,
   View,
   useWindowDimensions,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
 } from 'react-native';
 import { autoBackUp } from './src/cloud/cloudBackup';
 import type { TrackSegment } from './src/export/gpx';
 import type { FlightRecord } from './src/flights/types';
 import { resolvePlaces } from './src/places/resolvePlaces';
 import { database } from './src/store/database';
+import { AddFlightSheet } from './src/ui/AddFlightSheet';
 import { DialogHost } from './src/ui/DialogHost';
+import { ExploreScreen } from './src/ui/ExploreScreen';
+import { FlightDetailSheet } from './src/ui/FlightDetailSheet';
 import { FlightsScreen } from './src/ui/FlightsScreen';
-import { MapScreen } from './src/ui/MapScreen';
-import { CURVE, DURATION } from './src/ui/motion';
 import { openTab } from './src/ui/openedTabs';
-import { pageSlide } from './src/ui/slide';
+import { OverviewScreen } from './src/ui/OverviewScreen';
+import { pageAt, pagesBeside } from './src/ui/pager';
+import { PassportScreen } from './src/ui/PassportScreen';
+import { SettingsScreen } from './src/ui/SettingsScreen';
+import { ThemeProvider, useTheme } from './src/ui/ThemeProvider';
+import { TimelineScreen } from './src/ui/TimelineScreen';
+import { TABS, Toolbar } from './src/ui/Toolbar';
+import { useFlights } from './src/ui/useFlights';
 import { useReducedMotion } from './src/ui/useReducedMotion';
-import { ProfileScreen } from './src/ui/ProfileScreen';
-import { theme } from './src/ui/theme';
 import { useRecorder } from './src/ui/useRecorder';
-
-const TABS = ['旅程', '地圖', '我的'] as const;
 
 /**
  * Backs up in the background when the app comes to the foreground.
@@ -65,86 +69,37 @@ interface Highlight {
   segments: TrackSegment[];
 }
 
-/**
- * One page of the pager, moved by a native RenderThread transform.
- *
- * The container is an Animated.View in every state, hidden ones included. That
- * is load-bearing rather than tidy: React reconciles by element type, so
- * handing back a plain View while a page was hidden tore the entire subtree
- * down and rebuilt it on every switch — MapLibre's native map destroyed and
- * re-created, every screen's database effect run again. See slide.ts.
- */
-function SlideScreen({
-  tabIndex,
-  activeIndex,
-  prevIndex,
-  slideDir,
-  slideAnim,
-  width,
-  children,
-}: {
-  tabIndex: number;
-  activeIndex: number;
-  prevIndex: number | null;
-  slideDir: 1 | -1;
-  slideAnim: Animated.Value;
-  width: number;
-  children: React.ReactNode;
-}) {
-  const isCurrent = tabIndex === activeIndex;
-  const slide = pageSlide(tabIndex, activeIndex, prevIndex, slideDir);
-
-  const translateX = slide.animated
-    ? slideAnim.interpolate({
-        inputRange: [0, 1],
-        outputRange: [slide.from * width, slide.to * width],
-      })
-    : slide.from * width;
-
-  // The page being left dims as it goes, which is most of what makes the
-  // switch read as one screen giving way to another rather than a hard cut.
-  const opacity = slide.animated
-    ? slideAnim.interpolate({
-        inputRange: [0, 1],
-        outputRange: [slide.opacityFrom, slide.opacityTo],
-      })
-    : slide.opacityFrom;
-
+export default function App() {
   return (
-    <Animated.View
-      style={[
-        styles.page,
-        {
-          transform: [{ translateX }],
-          zIndex: isCurrent ? 2 : slide.visible ? 1 : -1,
-          opacity,
-        },
-      ]}
-      pointerEvents={isCurrent ? 'auto' : 'none'}
-    >
-      {children}
-    </Animated.View>
+    <ThemeProvider>
+      <Shell />
+    </ThemeProvider>
   );
 }
 
-export default function App() {
+function Shell() {
+  const t = useTheme();
   const recorder = useRecorder();
+  const flights = useFlights();
   const [index, setIndex] = useState(0);
-  const [prevIndex, setPrevIndex] = useState<number | null>(null);
-  const [slideDir, setSlideDir] = useState<1 | -1>(1);
+  const [expanded, setExpanded] = useState(false);
   const [highlighted, setHighlighted] = useState<Highlight | null>(null);
   const [focusedFlight, setFocusedFlight] = useState<FlightRecord | null>(null);
-  // Only the map exists at launch; see openedTabs.ts for why the rest wait.
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [inFlight, setInFlight] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const [exploring, setExploring] = useState(false);
+  const [explored, setExplored] = useState(false);
+  const [inPassport, setInPassport] = useState(false);
+  const [passportOpened, setPassportOpened] = useState(false);
+  // Only the first page exists at launch; see openedTabs.ts for why the rest wait.
   const [opened, setOpened] = useState<ReadonlySet<number>>(() => new Set([0]));
 
   const { width } = useWindowDimensions();
-  const [barWidth, setBarWidth] = useState(width);
-  const tabAnim = useRef(new Animated.Value(0)).current;
-  // A transition owns its own value. Rewinding a shared one has to happen in
-  // the tap handler, which lands a frame before React commits the new render —
-  // long enough to drag the page still on screen a full width sideways.
-  const [slideAnim, setSlideAnim] = useState(() => new Animated.Value(1));
-  const runningSlide = useRef<Animated.Value | null>(null);
+  const pager = useRef<ScrollView>(null);
+  // Where a tapped tab is heading. The scroll passes the pages between on its way,
+  // and each would otherwise take the toolbar with it.
+  const heading = useRef<number | null>(null);
   const reducedMotion = useReducedMotion();
 
   useAutomaticBackup();
@@ -154,60 +109,65 @@ export default function App() {
 
   const goTo = useCallback(
     (next: number) => {
-      const current = indexRef.current;
-      const clamped = Math.max(0, Math.min(TABS.length - 1, next));
-      if (clamped === current) return;
+      if (next === indexRef.current) return;
 
-      setOpened((tabs) => openTab(tabs, clamped));
-      setSlideDir(clamped > current ? 1 : -1);
+      setOpened((tabs) => openTab(tabs, next));
+      setIndex(next);
+      heading.current = next;
+      pager.current?.scrollTo({ x: next * width, animated: !reducedMotion });
+    },
+    [width, reducedMotion],
+  );
 
-      if (reducedMotion) {
-        // No prev page, so nothing is left mid-flight: the new page renders
-        // at rest and the old one is simply gone.
-        runningSlide.current = null;
-        tabAnim.setValue(clamped);
-        setPrevIndex(null);
-        setIndex(clamped);
+  const onPagerScroll = useCallback(
+    (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+      const page = pageAt(event.nativeEvent.contentOffset.x, width, TABS.length);
+
+      if (heading.current !== null) {
+        if (page === heading.current) heading.current = null;
         return;
       }
 
-      const anim = new Animated.Value(0);
-      runningSlide.current = anim;
-
-      setPrevIndex(current);
-      setIndex(clamped);
-      setSlideAnim(anim);
-
-      Animated.parallel([
-        Animated.spring(tabAnim, {
-          toValue: clamped,
-          tension: 110,
-          friction: 12,
-          useNativeDriver: true,
-        }),
-        Animated.timing(anim, {
-          toValue: 1,
-          duration: DURATION.page,
-          easing: Easing.bezier(...CURVE.move),
-          useNativeDriver: true,
-        }),
-      ]).start(() => {
-        // A tab tapped mid-slide cuts this animation short. Clearing prevIndex
-        // then would yank away the page that newer transition is still
-        // sliding out.
-        if (runningSlide.current === anim) setPrevIndex(null);
-      });
+      if (page !== indexRef.current) {
+        setOpened((tabs) => openTab(tabs, page));
+        setIndex(page);
+      }
     },
-    [tabAnim, reducedMotion],
+    [width],
   );
 
-  const clearHighlight = useCallback(() => setHighlighted(null), []);
-  const clearFocusedFlight = useCallback(() => setFocusedFlight(null), []);
+  // Before the finger has gone anywhere, so the next page is there when it arrives.
+  const onDragStart = useCallback(() => {
+    heading.current = null;
+    setOpened((tabs) =>
+      pagesBeside(indexRef.current, TABS.length).reduce((all, page) => openTab(all, page), tabs),
+    );
+  }, []);
+
+  const collapse = useCallback(() => {
+    setExpanded(false);
+    setHighlighted(null);
+    setFocusedFlight(null);
+  }, []);
+
+  const expand = useCallback(() => setExpanded(true), []);
+
+  // The map is a state of the first page rather than a page of its own, so the
+  // system's back gesture has to be told what it means here.
+  useEffect(() => {
+    if (!expanded) return;
+    const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+      collapse();
+      return true;
+    });
+    return () => subscription.remove();
+  }, [expanded, collapse]);
 
   const reviewDay = useCallback(
     (label: string, segments: TrackSegment[]) => {
       setHighlighted({ label, segments });
-      goTo(1);
+      goTo(0);
+      setExpanded(true);
     },
     [goTo],
   );
@@ -215,103 +175,122 @@ export default function App() {
   const viewFlightOnMap = useCallback(
     (flight: FlightRecord) => {
       setFocusedFlight(flight);
-      goTo(1);
+      setInPassport(false);
+      goTo(0);
+      setExpanded(true);
     },
     [goTo],
   );
 
-  const tabWidth = barWidth / TABS.length;
-  const indicatorWidth = 22;
-  const indicatorLeft = (tabWidth - indicatorWidth) / 2;
+  const openFlight = useCallback((flight: FlightRecord) => {
+    setSelectedId(flight.id);
+    setInFlight(true);
+  }, []);
 
-  const indicatorTranslateX = tabAnim.interpolate({
-    inputRange: [0, 1, 2],
-    outputRange: [
-      0 * tabWidth + indicatorLeft,
-      1 * tabWidth + indicatorLeft,
-      2 * tabWidth + indicatorLeft,
-    ],
-  });
+  const openExplore = useCallback(() => {
+    setExplored(true);
+    setExploring(true);
+  }, []);
+
+  const closeExplore = useCallback(() => setExploring(false), []);
+
+  const openPassport = useCallback(() => {
+    setPassportOpened(true);
+    setInPassport(true);
+  }, []);
+
+  const closePassport = useCallback(() => setInPassport(false), []);
+  const openAdd = useCallback(() => setAdding(true), []);
+  const closeAdd = useCallback(() => setAdding(false), []);
+  // The id stays, so the sheet still has a flight to show while it slides away.
+  const closeFlight = useCallback(() => setInFlight(false), []);
+
+  // Looked up by id on every render, so a change made elsewhere shows at once.
+  const selected = flights.flights.find((flight) => flight.id === selectedId) ?? null;
+
+  const pageSize = { width };
+  const covered = adding || exploring || inPassport || inFlight;
 
   return (
-    <View style={styles.container}>
-      <StatusBar style="light" />
+    <View style={[styles.container, { backgroundColor: t.ground }]}>
+      <StatusBar style="dark" />
 
-      {/* Stacked screens with silky horizontal slide and persistent map memory */}
-      <View style={styles.screens}>
-        <SlideScreen
-          tabIndex={0}
-          activeIndex={index}
-          prevIndex={prevIndex}
-          slideDir={slideDir}
-          slideAnim={slideAnim}
-          width={width}
-        >
-          <FlightsScreen onViewFlightOnMap={viewFlightOnMap} />
-        </SlideScreen>
-        <SlideScreen
-          tabIndex={1}
-          activeIndex={index}
-          prevIndex={prevIndex}
-          slideDir={slideDir}
-          slideAnim={slideAnim}
-          width={width}
-        >
-          {opened.has(1) ? (
-            <MapScreen
-              recorder={recorder}
-              highlighted={highlighted}
-              onClearHighlight={clearHighlight}
-              focusedFlight={focusedFlight}
-              onClearFocusedFlight={clearFocusedFlight}
-              active={index === 1}
-            />
-          ) : null}
-        </SlideScreen>
-        <SlideScreen
-          tabIndex={2}
-          activeIndex={index}
-          prevIndex={prevIndex}
-          slideDir={slideDir}
-          slideAnim={slideAnim}
-          width={width}
-        >
-          {opened.has(2) ? (
-            <ProfileScreen
-              recorder={recorder}
-              active={index === 2}
-              onSelectDay={reviewDay}
-            />
-          ) : null}
-        </SlideScreen>
-      </View>
-
-      <View
-        style={styles.tabBar}
-        onLayout={(e) => setBarWidth(e.nativeEvent.layout.width)}
+      {/* A native scroll view rather than a gesture in JS: redrawing the fog holds
+          the JS thread for seconds, and a swipe has to follow the finger through
+          that. Pages are never unmounted, which keeps MapLibre's map alive. With
+          the map open the drag belongs to the map. */}
+      <ScrollView
+        ref={pager}
+        style={styles.screens}
+        horizontal
+        pagingEnabled
+        scrollEnabled={!expanded}
+        showsHorizontalScrollIndicator={false}
+        overScrollMode="never"
+        keyboardShouldPersistTaps="handled"
+        scrollEventThrottle={16}
+        onScroll={onPagerScroll}
+        onScrollBeginDrag={onDragStart}
       >
-        <Animated.View
-          style={[
-            styles.activeIndicator,
-            {
-              width: indicatorWidth,
-              transform: [{ translateX: indicatorTranslateX }],
-            },
-          ]}
+        <View style={pageSize}>
+          <OverviewScreen
+            recorder={recorder}
+            flights={flights.flights}
+            highlighted={highlighted}
+            focusedFlight={focusedFlight}
+            expanded={expanded}
+            active={index === 0 && !covered}
+            onCollapse={collapse}
+            onExpand={expand}
+            onOpenExplore={openExplore}
+            onOpenFlight={openFlight}
+            onAdd={openAdd}
+            onOpenPassport={openPassport}
+          />
+        </View>
+        <View style={pageSize}>
+          {opened.has(1) ? <TimelineScreen onSelectDay={reviewDay} active={index === 1} /> : null}
+        </View>
+        <View style={pageSize}>
+          {opened.has(2) ? (
+            <FlightsScreen state={flights} onOpenFlight={openFlight} />
+          ) : null}
+        </View>
+        <View style={pageSize}>{opened.has(3) ? <SettingsScreen /> : null}</View>
+      </ScrollView>
+
+      {expanded ? null : <Toolbar active={index} onSelect={goTo} onAdd={openAdd} />}
+
+      {passportOpened ? (
+        <PassportScreen
+          flights={flights.flights}
+          visible={inPassport}
+          onClose={closePassport}
+          onOpenFlight={openFlight}
         />
-        {TABS.map((label, tabIndex) => (
-          <Pressable
-            key={label}
-            hitSlop={{ top: 12, bottom: 12, left: 10, right: 10 }}
-            style={({ pressed }) => [styles.tab, pressed && { opacity: 0.5 }]}
-            onPress={() => goTo(tabIndex)}
-          >
-            <Text style={[styles.tabLabel, index === tabIndex && styles.tabLabelActive]}>
-              {label}
-            </Text>
-          </Pressable>
-        ))}
-      </View>
+      ) : null}
+
+      {selected ? (
+        <FlightDetailSheet
+          key={selected.id}
+          flight={selected}
+          visible={inFlight}
+          onClose={closeFlight}
+          onFlightUpdated={flights.updated}
+          onFlightDeleted={flights.removed}
+          onViewOnMap={viewFlightOnMap}
+        />
+      ) : null}
+
+      <AddFlightSheet visible={adding} onClose={closeAdd} onFlightAdded={flights.added} />
+
+      {explored ? (
+        <ExploreScreen
+          recorder={recorder}
+          visible={exploring}
+          onClose={closeExplore}
+        />
+      ) : null}
 
       {/* Mounted once, at the root: anything in the app can ask a question
           without every screen in between having to pass a handler down. */}
@@ -321,40 +300,6 @@ export default function App() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: theme.background },
-  screens: {
-    flex: 1,
-    position: 'relative',
-    overflow: 'hidden',
-  },
-  page: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: theme.background,
-  },
-
-  tabBar: {
-    position: 'relative',
-    flexDirection: 'row',
-    paddingTop: 16,
-    paddingBottom: 14,
-    backgroundColor: theme.surfaceSolid,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: theme.border,
-  },
-  tab: { flex: 1, alignItems: 'center', paddingVertical: 2 },
-  tabLabel: { color: theme.textFaint, fontSize: 12, letterSpacing: 0.5 },
-  tabLabelActive: { color: theme.text, fontWeight: '600' },
-  activeIndicator: {
-    position: 'absolute',
-    bottom: 8,
-    left: 0,
-    height: 2.5,
-    borderRadius: 1.5,
-    backgroundColor: theme.accent,
-  },
+  container: { flex: 1 },
+  screens: { flex: 1 },
 });
-

@@ -13,6 +13,7 @@
  * sat in "upcoming" for a month and the passport counted a route nobody flew.
  */
 
+import { cleanFlightNumber } from './flightNumber';
 import type { TicketFacts } from './ticketFacts';
 import type { FlightRecord, LookedUpFlight } from './types';
 import { isValidDate, isValidTime, localToUtc, offsetToZone, utcToLocal } from './zonedTime';
@@ -61,7 +62,7 @@ export type BuildFlightResult =
 const orNull = (text: string | null | undefined) => text?.trim() || null;
 
 /** Tickets print "JX 871"; the status lookup and the airline code need JX871. */
-export const cleanFlightNumber = (text: string) => text.replace(/\s+/g, '').toUpperCase();
+export { cleanFlightNumber };
 
 /** A flight that is over when it is saved is the user's word that it was flown. */
 function outcome(status: FlightRecord['status'], arrScheduledUtc: number, now: number) {
@@ -72,7 +73,7 @@ function outcome(status: FlightRecord['status'], arrScheduledUtc: number, now: n
 
 function fromLookup(
   form: FlightForm,
-  flight: LookedUpFlight,
+  { borrowed, ...flight }: LookedUpFlight,
   now: number,
   id: string,
 ): FlightRecord {
@@ -87,7 +88,7 @@ function fromLookup(
     seat: orNull(form.seat),
     notes: orNull(form.notes),
     createdAt: now,
-    scheduleSource: 'api',
+    scheduleSource: borrowed ? 'nearby' : 'api',
     durationMinutes: Math.round((flight.arrScheduledUtc - flight.depScheduledUtc) / 60000),
     depEstimatedUtc: null,
     arrEstimatedUtc: null,

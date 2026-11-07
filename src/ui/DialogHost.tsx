@@ -7,14 +7,17 @@
  */
 
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { Animated, Easing, Modal, StyleSheet, Text, View } from 'react-native';
+import { Animated, Easing, Modal, StyleSheet, View } from 'react-native';
 import { answer, current, subscribe, type DialogRequest } from './dialog';
 import { CURVE, DURATION } from './motion';
 import { PressScale } from './PressScale';
-import { radius, theme } from './theme';
+import { useStyles } from './ThemeProvider';
+import { radius, SHARED, type Theme } from './themes';
 import { useReducedMotion } from './useReducedMotion';
+import { Text } from './Text';
 
 export function DialogHost() {
+  const styles = useStyles(make);
   const [request, setRequest] = useState<DialogRequest | null>(current);
 
   useEffect(() => subscribe(() => setRequest(current())), []);
@@ -75,6 +78,7 @@ export function DialogHost() {
  * mean holding an answered dialog on screen waiting for it.
  */
 function DialogCard({ children }: { children: ReactNode }) {
+  const styles = useStyles(make);
   const reduced = useReducedMotion();
   const progress = useRef(new Animated.Value(0)).current;
   const scale = useRef(new Animated.Value(0.94)).current;
@@ -125,44 +129,44 @@ function DialogCard({ children }: { children: ReactNode }) {
   );
 }
 
-const styles = StyleSheet.create({
-  scrim: {
-    flex: 1,
-    backgroundColor: 'rgba(2, 5, 12, 0.72)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 28,
-  },
-  card: {
-    width: '100%',
-    maxWidth: 400,
-    padding: 20,
-    borderRadius: radius.panel,
-    backgroundColor: theme.surfaceSolid,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.border,
-    gap: 10,
-  },
-  title: { color: theme.text, fontSize: 17, fontWeight: '700' },
-  message: { color: theme.textFaint, fontSize: 12, lineHeight: 19 },
+const make = (t: Theme) =>
+  StyleSheet.create({
+    scrim: {
+      flex: 1,
+      backgroundColor: 'rgba(20, 28, 36, 0.5)',
+      alignItems: 'center',
+      justifyContent: 'center',
+      padding: 28,
+    },
+    card: {
+      width: '100%',
+      maxWidth: 400,
+      padding: 22,
+      borderRadius: radius.ticket,
+      backgroundColor: t.ground,
+      gap: 10,
+    },
+    title: { color: t.ink, fontSize: 18, fontWeight: '800' },
+    message: { color: t.muted, fontSize: 14, lineHeight: 21 },
 
-  buttons: { flexDirection: 'row', gap: 10, marginTop: 8 },
-  buttonSlot: { flexGrow: 1, flexBasis: 0 },
-  cancel: {
-    paddingVertical: 12,
-    borderRadius: radius.card,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.border,
-    alignItems: 'center',
-  },
-  cancelText: { color: theme.textMuted, fontSize: 13, fontWeight: '600' },
-  confirm: {
-    paddingVertical: 12,
-    borderRadius: radius.card,
-    backgroundColor: theme.accent,
-    alignItems: 'center',
-  },
-  confirmDestructive: { backgroundColor: theme.danger },
-  confirmText: { color: '#04101f', fontSize: 13, fontWeight: '700' },
-  confirmTextDestructive: { color: '#2a0808' },
-});
+    buttons: { flexDirection: 'row', gap: 10, marginTop: 8 },
+    buttonSlot: { flexGrow: 1, flexBasis: 0 },
+    cancel: {
+      height: 48,
+      borderRadius: radius.round,
+      backgroundColor: t.soft,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    cancelText: { color: t.ink, fontSize: 15, fontWeight: '700' },
+    confirm: {
+      height: 48,
+      borderRadius: radius.round,
+      backgroundColor: t.ink,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    confirmDestructive: { backgroundColor: SHARED.danger },
+    confirmText: { color: '#FFFFFF', fontSize: 15, fontWeight: '700' },
+    confirmTextDestructive: { color: '#FFFFFF' },
+  });

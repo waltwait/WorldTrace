@@ -6,16 +6,15 @@
 import { File } from 'expo-file-system';
 import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 import { extractTextFromImage } from 'expo-text-extractor';
-import { localPath, type TicketImageReader } from './readTicket';
+import { localPath, turnedCopy, type TicketImageReader } from './readTicket';
 
 export const expoTicketReader: TicketImageReader = {
   read: (uri) => extractTextFromImage(localPath(uri)),
 
-  async rotate(uri, degrees) {
-    const image = await ImageManipulator.manipulate(uri).rotate(degrees).renderAsync();
-    const saved = await image.saveAsync({ format: SaveFormat.JPEG });
-    return saved.uri;
-  },
+  rotate: (uri, degrees) =>
+    turnedCopy(ImageManipulator.manipulate(uri), degrees, (image) =>
+      image.saveAsync({ format: SaveFormat.JPEG }),
+    ),
 
   discard(uri) {
     try {

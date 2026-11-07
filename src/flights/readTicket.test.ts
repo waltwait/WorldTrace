@@ -1,5 +1,5 @@
 import { describe, expect, test, vi } from 'vitest';
-import { localPath, readTicket, type TicketImageReader } from './readTicket';
+import { localPath, readTicket, turnedCopy, type TicketImageReader } from './readTicket';
 
 const NOW = Date.UTC(2026, 10, 7);
 const READABLE = ['BOARDING PASS', 'FLIGHT\nHB703', 'DATE\n12JUL', 'DEPARTURE TIME\n1040', 'SEAT\n62H'];
@@ -125,12 +125,123 @@ describe('readTicket', () => {
       read: async () => {
         throw new Error('model not ready');
       },
-      rotate: async () => 'never',
+      rotate: async (_uri, degrees) => `turned-${degrees}`,
       discard: (uri) => void discarded.push(uri),
     };
 
     await expect(readTicket(reader, 'picked', NOW)).rejects.toThrow('model not ready');
-    expect(discarded).toEqual(['picked']);
+    expect(discarded).toEqual(['turned-90', 'turned-270', 'turned-180', 'picked']);
+  });
+});
+
+describe('when turning the picture fails', () => {
+  const PARTIAL = ['FLIGHT\nHB703', 'DATE\n12JUL'];
+
+  test('keeps what was already read', async () => {
+    const reader: TicketImageReader = {
+      read: vi.fn(async () => PARTIAL),
+      rotate: vi.fn(async () => {
+        throw new Error('render cancelled');
+      }),
+      discard: () => {},
+    };
+
+    const [ticket] = await readTicket(reader, 'picked', NOW);
+
+    expect(ticket.flightNumber).toBe('HB703');
+  });
+
+  test('goes on to the other turns', async () => {
+    const reader: TicketImageReader = {
+      read: vi.fn(async (uri: string) => (uri === 'turned-270' ? READABLE : ['junk'])),
+      rotate: vi.fn(async (_uri: string, degrees: number) => {
+        if (degrees === 90) throw new Error('render cancelled');
+        return `turned-${degrees}`;
+      }),
+      discard: () => {},
+    };
+
+    const [ticket] = await readTicket(reader, 'picked', NOW);
+
+    expect(ticket.seat).toBe('62H');
+  });
+
+  // Saying nothing was found would be wrong: nothing was looked at.
+  test('says so when that left nothing read at all', async () => {
+    const reader: TicketImageReader = {
+      read: vi.fn(async () => ['junk']),
+      rotate: vi.fn(async () => {
+        throw new Error('render cancelled');
+      }),
+      discard: () => {},
+    };
+
+    await expect(readTicket(reader, 'picked', NOW)).rejects.toThrow('render cancelled');
+  });
+
+  test('still deletes the picture', async () => {
+    const { reader, discarded } = photo(-1);
+    reader.rotate = vi.fn(async () => {
+      throw new Error('render cancelled');
+    });
+
+    await readTicket(reader, 'picked', NOW).catch(() => {});
+
+    expect(discarded).toContain('picked');
+  });
+});
+
+// The native side cancels a render the moment its context is released, and the
+// garbage collector releases a context nothing refers to. Chained straight into
+// renderAsync, nothing did: a collection during the render failed the whole read.
+describe('turnedCopy', () => {
+  function fakes(fail?: 'render' | 'save') {
+    const log: string[] = [];
+    const image = { release: () => void log.push('image released') };
+    const context = {
+      rotate: vi.fn(() => void log.push('rotate')),
+      renderAsync: vi.fn(async () => {
+        log.push('render');
+        if (fail === 'render') throw new Error('no render');
+        return image;
+      }),
+      release: () => void log.push('context released'),
+    };
+    const save = vi.fn(async () => {
+      log.push('save');
+      if (fail === 'save') throw new Error('no save');
+      return { uri: 'turned' };
+    });
+    return { log, context, save };
+  }
+
+  test('gives the saved copy, turned as asked', async () => {
+    const { context, save } = fakes();
+
+    await expect(turnedCopy(context, 90, save)).resolves.toBe('turned');
+    expect(context.rotate).toHaveBeenCalledWith(90);
+  });
+
+  test('holds on to everything until the copy is saved', async () => {
+    const { log, context, save } = fakes();
+
+    await turnedCopy(context, 90, save);
+
+    expect(log).toEqual(['rotate', 'render', 'save', 'image released', 'context released']);
+  });
+
+  test('lets go when the render fails', async () => {
+    const { log, context, save } = fakes('render');
+
+    await expect(turnedCopy(context, 90, save)).rejects.toThrow('no render');
+    expect(log).toContain('context released');
+  });
+
+  test('lets go when the save fails', async () => {
+    const { log, context, save } = fakes('save');
+
+    await expect(turnedCopy(context, 90, save)).rejects.toThrow('no save');
+    expect(log.slice(-2)).toEqual(['image released', 'context released']);
   });
 });
 

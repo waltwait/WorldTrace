@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import { formatArea, formatDistance, formatByUnit, rejectionLabel,
   formatFlightDistance,
+  formatLaps,
 } from './format';
 
 describe('formatByUnit', () => {
@@ -104,5 +105,16 @@ describe('formatFlightDistance', () => {
   // A flight typed in by hand has no positions to measure between.
   test('shows a dash rather than 0 km for a distance nobody knows', () => {
     expect(formatFlightDistance(null)).toBe('—');
+  });
+});
+
+describe('formatLaps', () => {
+  test('says how many times round the Earth', () => {
+    expect(formatLaps(1.26)).toBe('繞地球 1.3 圈');
+  });
+
+  // 「繞地球 0.0 圈」 says nothing a reader wants to hear.
+  test('says nothing until there is a tenth of a lap to report', () => {
+    expect(formatLaps(0.04)).toBeNull();
   });
 });

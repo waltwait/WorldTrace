@@ -59,7 +59,8 @@ export interface FlightRecord {
 }
 
 /** 'api' for a timetable looked up; 'user' for one typed in when none could be. */
-export type ScheduleSource = 'api' | 'user';
+/** `nearby`: too old to look up, so taken from a recent day; see flightLookup.ts. */
+export type ScheduleSource = 'api' | 'user' | 'nearby';
 
 /** One flight as the status API describes it. */
 export type LookedUpFlight = Pick<
@@ -87,7 +88,10 @@ export type LookedUpFlight = Pick<
   | 'depGate'
   | 'arrGate'
   | 'status'
->;
+> & {
+  /** Another day's flight, moved onto this date. */
+  borrowed?: boolean;
+};
 
 export interface FlightDocRecord {
   id: string;

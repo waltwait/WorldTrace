@@ -16,7 +16,8 @@ import { buttonLabel, createActionState, runAction, type ActionResult } from './
 import { FadeIn } from './FadeIn';
 import { PressScale } from './PressScale';
 import { SwapText } from './SwapText';
-import { radius, theme } from './theme';
+import { useStyles, useTheme } from './ThemeProvider';
+import { radius, type Theme } from './themes';
 
 type Variant = 'primary' | 'secondary' | 'row';
 
@@ -38,6 +39,8 @@ export function ActionButton({
   confirm?: () => Promise<boolean>;
   onPress: () => Promise<ActionResult>;
 }) {
+  const styles = useStyles(make);
+  const t = useTheme();
   const state = useMemo(() => createActionState(), []);
   useEffect(() => () => state.dispose(), [state]);
 
@@ -76,7 +79,7 @@ export function ActionButton({
         />
         <View style={styles.rowEnd}>
           {busy ? (
-            <ActivityIndicator size="small" color={theme.accent} />
+            <ActivityIndicator size="small" color={t.muted} />
           ) : (
             <SwapText text={done ? '✓' : '›'} style={[styles.rowArrow, done && styles.confirmed]} />
           )}
@@ -96,7 +99,7 @@ export function ActionButton({
     >
       {busy ? (
         <FadeIn offset={0} style={styles.spinner}>
-          <ActivityIndicator size="small" color={primary ? PRIMARY_INK : theme.accent} />
+          <ActivityIndicator size="small" color={primary ? '#FFFFFF' : t.ink} />
         </FadeIn>
       ) : null}
       <SwapText
@@ -112,54 +115,50 @@ export function ActionButton({
   );
 }
 
-const PRIMARY_INK = '#04101f';
+const make = (t: Theme) =>
+  StyleSheet.create({
+    grow: { flexGrow: 1, flexBasis: 0 },
+    faded: { opacity: 0.45 },
+    confirmed: { color: t.ink, fontWeight: '700' },
 
-const styles = StyleSheet.create({
-  grow: { flexGrow: 1, flexBasis: 0 },
-  faded: { opacity: 0.45 },
-  confirmed: { color: theme.live },
+    primary: {
+      height: 52,
+      paddingHorizontal: 18,
+      borderRadius: radius.round,
+      backgroundColor: t.ink,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    primaryText: { color: '#FFFFFF', fontSize: 16, fontWeight: '700' },
+    secondary: {
+      height: 52,
+      paddingHorizontal: 18,
+      borderRadius: radius.round,
+      backgroundColor: t.soft,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    secondaryText: { color: t.ink, fontSize: 15, fontWeight: '700' },
 
-  primary: {
-    paddingVertical: 11,
-    paddingHorizontal: 14,
-    borderRadius: radius.card,
-    backgroundColor: theme.accent,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  primaryText: { color: PRIMARY_INK, fontSize: 13, fontWeight: '700' },
-  secondary: {
-    paddingVertical: 11,
-    paddingHorizontal: 14,
-    borderRadius: radius.card,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.border,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  secondaryText: { color: theme.textMuted, fontSize: 13, fontWeight: '600' },
+    // Beside the label rather than in line with it, so the label does not shift
+    // sideways when the spinner appears while SwapText flips to busyLabel.
+    spinner: {
+      position: 'absolute',
+      left: 16,
+      top: 0,
+      bottom: 0,
+      justifyContent: 'center',
+    },
 
-  // Beside the label rather than in line with it, so the label does not shift
-  // sideways when the spinner appears while SwapText flips to busyLabel.
-  spinner: {
-    position: 'absolute',
-    left: 12,
-    top: 0,
-    bottom: 0,
-    justifyContent: 'center',
-  },
-
-  row: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    padding: 16,
-    borderRadius: radius.card,
-    backgroundColor: theme.surfaceSolid,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.border,
-  },
-  rowTitle: { color: theme.text, fontSize: 15, fontWeight: '600', flexShrink: 1, paddingRight: 12 },
-  rowEnd: { width: 24, height: 24, alignItems: 'center', justifyContent: 'center' },
-  rowArrow: { color: theme.accent, fontSize: 18 },
-});
+    // A line in a group of settings, drawn on the group's own background.
+    row: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      minHeight: 50,
+      paddingHorizontal: 16,
+    },
+    rowTitle: { color: t.ink, fontSize: 15, flexShrink: 1, paddingRight: 12 },
+    rowEnd: { width: 24, height: 24, alignItems: 'center', justifyContent: 'center' },
+    rowArrow: { color: t.muted, fontSize: 18 },
+  });

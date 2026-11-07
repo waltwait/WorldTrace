@@ -277,6 +277,14 @@ describe('flightStatusApi', () => {
       expect(seen[0]).toMatch(/\/flights\/number\/BR198\/2026-12-01/);
     });
 
+    // A flight saved off a ticket before the padding was dropped still has it.
+    test('asks without the padding a ticket prints', async () => {
+      const seen: string[] = [];
+      const port = createAeroDataBoxPort('key', fakeFetch([leg('TPE')], seen));
+      await port.fetchFlightStatus('BR0198', '2026-12-01', 'TPE');
+      expect(seen[0]).toMatch(/\/flights\/number\/BR198\/2026-12-01/);
+    });
+
     test('takes the leg that leaves from the flight\'s own airport', async () => {
       const body = [leg('NRT', { gate: '71' }), leg('TPE', { gate: 'B7' })];
       const port = createAeroDataBoxPort('key', fakeFetch(body));

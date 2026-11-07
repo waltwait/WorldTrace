@@ -34,6 +34,7 @@ export function PressScale({
   disabled,
   onPress,
   hitSlop,
+  label,
 }: {
   children: ReactNode;
   /** What the control looks like. This is the part that shrinks. */
@@ -43,6 +44,8 @@ export function PressScale({
   disabled?: boolean;
   onPress?: PressableProps['onPress'];
   hitSlop?: PressableProps['hitSlop'];
+  /** What a screen reader says, for a control that is only an icon. */
+  label?: string;
 }) {
   const reduced = useReducedMotion();
   const scale = useRef(new Animated.Value(1)).current;
@@ -76,6 +79,8 @@ export function PressScale({
       onPressOut={up}
       disabled={disabled}
       hitSlop={hitSlop}
+      accessibilityRole="button"
+      accessibilityLabel={label}
     >
       <Animated.View style={[style, { opacity: dim, transform: [{ scale }] }]}>
         {children}

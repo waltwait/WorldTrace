@@ -288,3 +288,107 @@ describe('a seat', () => {
     expect(seat('GATE\n62H')).toBeNull();
   });
 });
+
+// Laid out as a paper pass with a stub: the flight and the date joined by a slash,
+// the number padded to four digits, a boarding time and no departure time.
+describe('a boarding pass that joins the flight and the date', () => {
+  const PAPER = [
+    'ECONOMY CLASS',
+    'GATE\n3',
+    'BOARDING TIME\n00\n19:40',
+    'SEAT\n22C',
+    'BR0198/14JUN',
+    'Flight\nFrom-To',
+    'NRT -TPE',
+    'NRT/005',
+    'BR0198/14JUN\nNRT-TPE',
+    'EVAAIR',
+  ];
+  const tickets = extractTickets(PAPER, NOW);
+
+  test('is one flight, though the stub prints it again', () => {
+    expect(tickets).toHaveLength(1);
+  });
+
+  // The ticket pads the number. The flight is BR198, and that is what gets looked up.
+  test('drops the padding from the number', () => {
+    expect(tickets[0].flightNumber).toBe('BR198');
+  });
+
+  test('reads the date behind the slash', () => {
+    expect(tickets[0].date?.slice(5)).toBe('06-14');
+  });
+
+  test('finds the seat', () => {
+    expect(tickets[0].seat).toBe('22C');
+  });
+
+  // The only clock on it is when boarding opens, and a pen may have changed even that.
+  test('does not take the boarding time for the departure', () => {
+    expect(tickets[0].time).toBeNull();
+  });
+
+  describe('misread', () => {
+    const lastTimeRound = (lines: string[]) => extractTickets(lines, NOW)[0].date?.slice(0, 4);
+    const past = extractTickets(PAPER, NOW)[0].date?.slice(0, 4);
+
+    test('is still a boarding pass with its label half read', () => {
+      const misread = PAPER.map((line) => line.replace('BOARDING TIME', 'BOARDING TOMET'));
+
+      expect(lastTimeRound(misread)).toBe(past);
+    });
+
+    test('is still a boarding pass from its gate alone', () => {
+      const noLabel = PAPER.filter((line) => !line.startsWith('BOARDING'));
+
+      expect(lastTimeRound(noLabel)).toBe(past);
+    });
+  });
+});
+
+test('a mail keeps its only time: it has no boarding time to confuse it with', () => {
+  const [ticket] = extractTickets(['Flight JX871', '03 Mar 2027 15:25'], NOW);
+
+  expect(ticket.time).toBe('15:25');
+});
+
+// As ML Kit on the phone really reads a paper pass: the zero comes back as the letter
+// O, on every turn of the picture, and the slash sometimes as a bar. Vision on a Mac
+// reads the same ticket correctly, so a test against that proves nothing.
+describe('a flight number with its zero read as the letter O', () => {
+  const READ = [
+    'GATE\n3',
+    'BOARDING TIME',
+    'SEAT\n22C',
+    'BRO198/14 JUN',
+    'BRO198|14JUN',
+    'NRT /005',
+    '35',
+    '011001000',
+  ];
+
+  test('is put right', () => {
+    expect(extractTickets(READ, NOW).map((t) => t.flightNumber)).toEqual(['BR198']);
+  });
+
+  test('keeps the rest of the ticket', () => {
+    const [ticket] = extractTickets(READ, NOW);
+
+    expect(ticket.date).toBe('2026-06-14');
+    expect(ticket.seat).toBe('22C');
+  });
+
+  test.each(['BRO198/14JUN', 'BRO198|14JUN', 'BRO198 / 14 JUN', 'bro198/14jun'])('from %s', (line) => {
+    expect(extractTickets([line], NOW)[0]?.flightNumber).toBe('BR198');
+  });
+
+  // A booking code is six letters and digits too, and it is never to be read. Only
+  // the date behind it says this is a flight.
+  test('is left alone with no date behind it', () => {
+    expect(extractTickets(['Booking reference: XYO123', '14 JUN 2027'], NOW)).toEqual([]);
+  });
+
+  test('needs a digit, or any word beside a date would do', () => {
+    expect(extractTickets(['GOOOO/14JUN'], NOW)).toEqual([]);
+  });
+});

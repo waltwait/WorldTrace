@@ -2,6 +2,7 @@
  * Flight status tracking and tiered polling scheduler.
  */
 
+import { cleanFlightNumber } from './flightNumber';
 import { calculateFlightKm } from './greatCircle';
 import type { FlightRecord, FlightStatus, LookedUpFlight } from './types';
 import { utcToLocal } from './zonedTime';
@@ -263,7 +264,7 @@ export function createAeroDataBoxPort(
     const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
     try {
-      const cleanNum = flightNumber.trim().toUpperCase();
+      const cleanNum = cleanFlightNumber(flightNumber);
       const url = `https://aerodatabox.p.rapidapi.com/flights/number/${encodeURIComponent(cleanNum)}/${dateLocal}`;
 
       const res = await fetchFn(url, {
@@ -274,7 +275,11 @@ export function createAeroDataBoxPort(
         },
       });
 
-      if (!res.ok) return null;
+      if (!res.ok) {
+        // The status is the only thing that tells a refused date from a spent quota.
+        console.warn('[WorldTrace] flight lookup refused', res.status);
+        return null;
+      }
 
       const data = (await res.json()) as AeroDataBoxLeg | AeroDataBoxLeg[];
       return Array.isArray(data) ? data : [data];
@@ -312,7 +317,7 @@ export function createAeroDataBoxPort(
 
     async findFlights(flightNumber, dateLocal) {
       const legs = await fetchLegs(flightNumber, dateLocal);
-      const cleanNum = flightNumber.trim().toUpperCase();
+      const cleanNum = cleanFlightNumber(flightNumber);
       return (legs ?? []).flatMap((leg) => toLookedUpFlight(leg, cleanNum) ?? []);
     },
   };

@@ -10,6 +10,7 @@
  * behind a boarding pass.
  */
 
+import { cleanFlightNumber } from './flightNumber';
 import { dateExists, yearFor, type TicketKind } from './ticketYear';
 
 export interface TicketFacts {
@@ -31,14 +32,25 @@ const SPACED_NUMBER = /\b([A-Z][A-Z0-9]|[0-9][A-Z])\s+([0-9]{3,4})\b/;
 const NOT_AN_AIRLINE = /^(AT|ON|TO|IN|NO|OF|BY|OR|IS|IT|AS|BE|GO|UP|US|WE|DO|SO)$/;
 
 function flightNumberIn(line: string): string | null {
+  const misread = MISREAD_NUMBER.exec(line);
+  if (misread && /\d/.test(misread[2])) {
+    return cleanFlightNumber(`${misread[1]}${misread[2].replace(/O/gi, '0')}`);
+  }
+
   const joined = JOINED_NUMBER.exec(line);
-  if (joined) return `${joined[1]}${joined[2]}`.toUpperCase();
+  if (joined) return cleanFlightNumber(`${joined[1]}${joined[2]}`);
   const spaced = SPACED_NUMBER.exec(line);
-  return spaced && !NOT_AN_AIRLINE.test(spaced[1]) ? `${spaced[1]}${spaced[2]}` : null;
+  return spaced && !NOT_AN_AIRLINE.test(spaced[1])
+    ? cleanFlightNumber(`${spaced[1]}${spaced[2]}`)
+    : null;
 }
 
 const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
 const MONTH = 'JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC';
+// BRO117/21JUN: a paper pass joins the flight to its date, and ML Kit reads the zero
+// of its padding as the letter O, the slash now and then as a bar. Only with the date
+// behind it: a booking code is letters and digits as well, and is never to be read.
+const MISREAD_NUMBER = new RegExp(`\\b([A-Z][A-Z0-9])([0-9O]{3,4})\\s*[/|]\\s*\\d{1,2}\\s*(?:${MONTH})`, 'i');
 const WHOLE_DATE = /\b(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})\b/;
 const CHINESE_DATE = /(?:(\d{4})\s*年\s*)?(\d{1,2})\s*月\s*(\d{1,2})\s*日/;
 // "12JUL", "03 Mar", "31 Dec 2026", "31DEC26". The look-ahead keeps "03 Mar 15:25"
@@ -124,7 +136,7 @@ const COMPACT_TIME = /\b([01]\d|2[0-3])[:.]?([0-5]\d)\b/;
 const ONLY_A_TIME = /^([01]\d|2[0-3])[:.]?([0-5]\d)$/;
 const DEPARTURE_LABEL = /DEPARTURE\s*TIME|起飛時間/i;
 
-function findTime(lines: readonly string[]): string | null {
+function findTime(lines: readonly string[], kind: TicketKind): string | null {
   // A boarding pass prints 1040 with no colon, beside a boarding time just like
   // it, so there it is only taken from under its own label.
   for (let i = 0; i < lines.length; i++) {
@@ -135,6 +147,10 @@ function findTime(lines: readonly string[]): string | null {
     const match = COMPACT_TIME.exec(after) ?? ONLY_A_TIME.exec(lines[i + 1] ?? '');
     if (match) return `${pad(Number(match[1]))}:${match[2]}`;
   }
+
+  // A lone time on a boarding pass is when boarding opens, and may have a pen
+  // through it. The flight has a real time, and the lookup knows it.
+  if (kind === 'ticket') return null;
 
   // Otherwise only a time that is the only one. A mail prints the departure and
   // the arrival, and recognition's blocks come back in no order to rely on: on
@@ -169,7 +185,9 @@ function findSeat(lines: readonly string[]): string | null {
     : null;
 }
 
-const BOARDING_PASS = /BOARDING\s*(PASS|TIME)|登機證/i;
+// Loose on purpose: recognition read "BOARDING TOMET", and the year a ticket was
+// guessed to be in went a year out with it. Only a boarding pass prints a gate.
+const BOARDING_PASS = /BOARDING|登機|\bGATE\b/i;
 
 /**
  * Every flight on a ticket, in the order printed. With several, each takes the
@@ -211,7 +229,7 @@ export function extractTickets(blocks: readonly string[], now: number): TicketFa
     return {
       flightNumber,
       date: found?.date ?? null,
-      time: findTime(whole),
+      time: findTime(whole, kind),
       seat: findSeat(whole),
       yearGuessed: found?.guessed ?? false,
     };

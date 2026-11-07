@@ -76,6 +76,18 @@ printf 'size         %s\n' "$(du -h "$APK" | cut -f1)"
 printf 'sha256       %s\n' "$(shasum -a 256 "$APK" | cut -d' ' -f1)"
 printf 'versionCode  %s\n' "$version_code"
 
+# A font that did not make it into android/ crashes nothing: the system's is drawn
+# instead. assets/ reaches the APK only through android/, so check the APK.
+for font in assets/fonts/*.ttf; do
+  name="assets/fonts/$(basename "$font")"
+  if unzip -l "$APK" "$name" >/dev/null 2>&1; then
+    printf 'contains     %s ✓\n' "$name"
+  else
+    echo "$name is not in the APK: copy it to android/app/src/main/assets/fonts/" >&2
+    exit 1
+  fi
+done
+
 if [ -n "$expect" ]; then
   # Grep for ASCII only: Hermes stores non-ASCII literals as UTF-16, so looking
   # for Chinese UI text finds nothing even when it is there.

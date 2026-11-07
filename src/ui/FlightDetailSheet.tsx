@@ -1,17 +1,8 @@
 import { memo, useCallback, useEffect, useState } from 'react';
-import {
-  Modal,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from 'react-native';
+import { Modal, ScrollView, StyleSheet, View } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
 import * as Sharing from 'expo-sharing';
-import { flagEmoji } from '../flights/countries';
-import { airportDate, airportLabel, airportTime, statusLabel } from '../flights/flightDisplay';
+import { airportTime, statusLabel, ticketFor } from '../flights/flightDisplay';
 import {
   createAeroDataBoxPort,
   syncFlightStatus,
@@ -25,10 +16,14 @@ import { attachFlightDoc, deleteFlightAndDocs, removeFlightDoc } from '../store/
 import { saveSyncedFlight } from '../store/flightRefresh';
 import { listFlightDocs, updateFlight } from '../store/flights';
 import { ActionButton } from './ActionButton';
-import { PressScale } from './PressScale';
 import { ask } from './dialog';
 import { formatFlightDistance } from './format';
-import { radius, theme } from './theme';
+import { Icon } from './Icon';
+import { PressScale } from './PressScale';
+import { Ticket } from './Ticket';
+import { useStyles, useTheme } from './ThemeProvider';
+import { FONT, radius, SHARED, type Theme } from './themes';
+import { Text, TextInput } from './Text';
 
 interface FlightDetailSheetProps {
   flight: FlightRecord | null;
@@ -73,6 +68,8 @@ function FlightDetailContent({
   onFlightDeleted,
   onViewOnMap,
 }: FlightDetailSheetProps & { flight: FlightRecord }) {
+  const styles = useStyles(make);
+  const t = useTheme();
   const [docs, setDocs] = useState<FlightDocRecord[]>([]);
   const [editingGate, setEditingGate] = useState(false);
   const [depGateInput, setDepGateInput] = useState('');
@@ -96,7 +93,7 @@ function FlightDetailContent({
     return () => {
       cancelled = true;
     };
-  }, [flight.id]);
+  }, [flight.id, visible]);
 
   // On the values as well as the id: a sync changes them under an open sheet,
   // and saving the old text in these boxes would wipe what it found.
@@ -261,600 +258,231 @@ function FlightDetailContent({
   }, [flight, onFlightDeleted, onClose]);
 
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-      <View style={styles.scrim}>
-        <Pressable style={styles.scrimDismiss} onPress={onClose}>
-          <View />
-        </Pressable>
+    <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
+      <ScrollView
+        style={styles.screen}
+        contentContainerStyle={styles.content}
+        keyboardShouldPersistTaps="handled"
+      >
+        <PressScale style={styles.back} onPress={onClose} label="返回" hitSlop={8}>
+          <Icon name="back" color={t.ink} />
+        </PressScale>
 
-        <View style={styles.sheet}>
-          {/* Header */}
-          <View style={styles.header}>
-            <View>
-              <View style={styles.headerRow}>
-                <Text style={styles.flightNumber}>{flight.flightNumber}</Text>
-                <View
-                  style={[
-                    styles.statusBadge,
-                    flight.isFinished && styles.statusBadgeFinished,
-                  ]}
-                >
-                  <Text style={styles.statusBadgeText}>
-                    {statusLabel(flight)}
-                  </Text>
-                </View>
-              </View>
-              <Text style={styles.headerRoute}>
-                {airportLabel(flight.depCity, flight.depIata)} →{' '}
-                {airportLabel(flight.arrCity, flight.arrIata)} ·{' '}
-                {airportDate(flight.depScheduledUtc, flight.depTz)}
-              </Text>
-            </View>
-            <PressScale style={styles.closeButton} onPress={onClose} hitSlop={8}>
-              <Text style={styles.closeText}>✕</Text>
-            </PressScale>
+        <Ticket
+          ticket={ticketFor(flight, Date.now())}
+          heading={`${flight.flightNumber} ${flight.airlineName}`}
+        />
+
+        <View style={styles.times}>
+          <View>
+            <Text style={styles.time}>{airportTime(flight.depScheduledUtc, flight.depTz)}</Text>
+            <Text style={styles.place}>{placeLine(flight.depCity, flight.depIata, flight.depTerminal)}</Text>
           </View>
-
-          <ScrollView style={styles.scroll} contentContainerStyle={styles.content}>
-            {/* Route & Times Card */}
-            <View style={styles.card}>
-              <View style={styles.airportsRow}>
-                <View style={styles.airportCol}>
-                  <Text style={styles.airportFlag}>{flagEmoji(flight.depCountry) || '✈️'}</Text>
-                  <Text style={styles.airportIata}>{flight.depIata}</Text>
-                  <Text style={styles.timeText}>{airportTime(flight.depScheduledUtc, flight.depTz)}</Text>
-                  <Text style={styles.cityText}>{flight.depCity}</Text>
-
-                  {/* Airport Yellow Sign Badge */}
-                  <PressScale
-                    style={styles.signBadge}
-                    onPress={() => setEditingGate((v) => !v)}
-                  >
-                    <Text style={styles.signBadgeText}>
-                      ↗ 登機門 {flight.depGate ?? '—'}
-                    </Text>
-                  </PressScale>
-                </View>
-
-                <View style={styles.flightMiddleCol}>
-                  <Text style={styles.durationText}>
-                    {Math.floor(flight.durationMinutes / 60)} 小時 {flight.durationMinutes % 60} 分
-                  </Text>
-                  <View style={styles.routeLine} />
-                  <Text style={styles.milesText}>{formatFlightDistance(flight.distanceKm)}</Text>
-                </View>
-
-                <View style={[styles.airportCol, styles.alignRight]}>
-                  <Text style={styles.airportFlag}>{flagEmoji(flight.arrCountry) || '🛬'}</Text>
-                  <Text style={styles.airportIata}>{flight.arrIata}</Text>
-                  <Text style={styles.timeText}>{airportTime(flight.arrScheduledUtc, flight.arrTz)}</Text>
-                  <Text style={styles.cityText}>{flight.arrCity}</Text>
-
-                  {/* Airport Yellow Sign Badge */}
-                  <PressScale
-                    style={styles.signBadge}
-                    onPress={() => setEditingGate((v) => !v)}
-                  >
-                    <Text style={styles.signBadgeText}>
-                      ↘ 登機門 {flight.arrGate ?? '—'}
-                    </Text>
-                  </PressScale>
-                </View>
-              </View>
-
-              {flight.baggageBelt ? (
-                <PressScale
-                  style={styles.baggageRow}
-                  onPress={() => setEditingGate((v) => !v)}
-                >
-                  <Text style={styles.baggageIcon}>🧳</Text>
-                  <Text style={styles.baggageText}>
-                    行李轉盤：{flight.baggageBelt} 號
-                  </Text>
-                </PressScale>
-              ) : null}
-
-              {editingGate ? (
-                <View style={styles.gateEditorBox}>
-                  <View style={styles.gateEditorInputs}>
-                    <View style={styles.flex1}>
-                      <Text style={styles.editorLabel}>起飛登機門</Text>
-                      <TextInput
-                        style={styles.gateInput}
-                        value={depGateInput}
-                        onChangeText={setDepGateInput}
-                        placeholder="如 D6"
-                        placeholderTextColor={theme.textFaint}
-                        autoCapitalize="characters"
-                      />
-                    </View>
-                    <View style={styles.flex1}>
-                      <Text style={styles.editorLabel}>抵達登機門</Text>
-                      <TextInput
-                        style={styles.gateInput}
-                        value={arrGateInput}
-                        onChangeText={setArrGateInput}
-                        placeholder="如 18"
-                        placeholderTextColor={theme.textFaint}
-                        autoCapitalize="characters"
-                      />
-                    </View>
-                    <View style={styles.flex1}>
-                      <Text style={styles.editorLabel}>行李轉盤</Text>
-                      <TextInput
-                        style={styles.gateInput}
-                        value={baggageInput}
-                        onChangeText={setBaggageInput}
-                        placeholder="如 7"
-                        placeholderTextColor={theme.textFaint}
-                      />
-                    </View>
-                  </View>
-                  <ActionButton
-                    variant="primary"
-                    label="儲存修改"
-                    busyLabel="儲存中…"
-                    onPress={handleSaveGates}
-                  />
-                </View>
-              ) : null}
-              {/* Airport & Route Quick Map Link */}
-              <PressScale
-                style={styles.viewOnMapBtn}
-                onPress={() => {
-                  onClose();
-                  onViewOnMap?.(flight);
-                }}
-              >
-                <Text style={styles.viewOnMapText}>🗺️ 在地圖上查看</Text>
-              </PressScale>
-            </View>
-
-            {/* Live Sync Action */}
-            <View style={styles.syncRow}>
-              <ActionButton
-                variant="secondary"
-                label="🔄 更新動態"
-                busyLabel="查詢中…"
-                onPress={handleSyncStatus}
-              />
-            </View>
-
-            {/* Flight Details: Airline, Seat, Notes */}
-            <View style={styles.card}>
-              <View style={styles.detailRow}>
-                <Text style={styles.detailLabel}>航空公司</Text>
-                <Text style={styles.detailValue}>{flight.airlineName}</Text>
-              </View>
-
-              {flight.seat ? (
-                <>
-                  <View style={styles.divider} />
-                  <View style={styles.detailRow}>
-                    <Text style={styles.detailLabel}>座位</Text>
-                    <Text style={styles.detailValue}>{flight.seat}</Text>
-                  </View>
-                </>
-              ) : null}
-
-              {flight.notes ? (
-                <>
-                  <View style={styles.divider} />
-                  <View style={styles.detailCol}>
-                    <Text style={styles.detailLabel}>備註</Text>
-                    <Text style={styles.notesText}>{flight.notes}</Text>
-                  </View>
-                </>
-              ) : null}
-            </View>
-
-            {/* Travel Docs Section */}
-            <View style={styles.card}>
-              <View style={styles.docsHeader}>
-                <View style={styles.docsTitleRow}>
-                  <Text style={styles.tzSectionTitle}>電子機票與文件</Text>
-                  {docs.length > 0 ? (
-                    <View style={styles.docsCountBadge}>
-                      <Text style={styles.docsCountText}>{docs.length}</Text>
-                    </View>
-                  ) : null}
-                </View>
-                <PressScale style={styles.addDocBtn} onPress={handleAddDoc}>
-                  <Text style={styles.addDocBtnText}>＋ 附加文件</Text>
-                </PressScale>
-              </View>
-
-              {docs.length > 0 ? (
-                <View style={styles.docsList}>
-                  {docs.map((doc) => (
-                    <View key={doc.id} style={styles.docItem}>
-                      <PressScale
-                        style={styles.docItemMain}
-                        onPress={() => void handleOpenDoc(doc)}
-                      >
-                        <Text style={styles.docIcon}>
-                          {doc.mimeType.includes('pdf') ? '📄' : '🖼️'}
-                        </Text>
-                        <View style={styles.docTextCol}>
-                          <Text style={styles.docName} numberOfLines={1}>
-                            {doc.fileName}
-                          </Text>
-                        </View>
-                      </PressScale>
-                      <PressScale
-                        style={styles.docDeleteBtn}
-                        onPress={() => void handleDeleteDoc(doc)}
-                        hitSlop={8}
-                      >
-                        <Text style={styles.docDeleteText}>✕</Text>
-                      </PressScale>
-                    </View>
-                  ))}
-                </View>
-              ) : null}
-            </View>
-
-            {/* Only when there is something to adjust to. */}
-            {timeDifference.hasDifference ? (
-              <View style={styles.card}>
-                <Text style={styles.tzSectionTitle}>抵達當地</Text>
-                <Text style={styles.tzHeadline}>{timeDifference.headline}</Text>
-              </View>
-            ) : null}
-
-            {/* Action Buttons */}
-            <View style={styles.bottomActions}>
-              <ActionButton
-                variant="secondary"
-                label={flight.isFinished ? '移回「即將出發」' : '標記為「已完成」'}
-                busyLabel="更新中…"
-                onPress={toggleFinished}
-              />
-              <PressScale style={styles.deleteButton} onPress={handleDelete} hitSlop={6}>
-                <Text style={styles.deleteButtonText}>刪除此航班</Text>
-              </PressScale>
-            </View>
-          </ScrollView>
+          <View style={styles.alignEnd}>
+            <Text style={styles.time}>{airportTime(flight.arrScheduledUtc, flight.arrTz)}</Text>
+            <Text style={styles.place}>{placeLine(flight.arrCity, flight.arrIata, flight.arrTerminal)}</Text>
+          </View>
         </View>
-      </View>
+
+        <View style={styles.group}>
+          <Fact label="狀態" value={statusLabel(flight)} first />
+          <Fact label="飛行時間" value={durationText(flight.durationMinutes)} />
+          <Fact label="距離" value={formatFlightDistance(flight.distanceKm)} />
+          {timeDifference.hasDifference ? <Fact label="時差" value={timeDifference.headline} /> : null}
+          {flight.scheduleSource === 'nearby' ? <Fact label="班表" value="取自近期班次" /> : null}
+          {flight.seat ? <Fact label="座位" value={flight.seat} /> : null}
+          {flight.notes ? <Fact label="備註" value={flight.notes} /> : null}
+        </View>
+
+        <View style={styles.group}>
+          <PressScale onPress={() => setEditingGate((v) => !v)}>
+            <Fact label="起飛登機門" value={flight.depGate ?? '—'} first />
+            <Fact label="抵達登機門" value={flight.arrGate ?? '—'} />
+            <Fact label="行李轉盤" value={flight.baggageBelt ?? '—'} />
+          </PressScale>
+
+          {editingGate ? (
+            <View style={styles.editor}>
+              <View style={styles.inputs}>
+                <GateInput label="起飛" value={depGateInput} onChange={setDepGateInput} caps />
+                <GateInput label="抵達" value={arrGateInput} onChange={setArrGateInput} caps />
+                <GateInput label="轉盤" value={baggageInput} onChange={setBaggageInput} />
+              </View>
+              <ActionButton
+                variant="primary"
+                label="儲存修改"
+                busyLabel="儲存中…"
+                onPress={handleSaveGates}
+              />
+            </View>
+          ) : null}
+        </View>
+
+        <View style={styles.group}>
+          {docs.map((doc, index) => (
+            <View key={doc.id} style={[styles.docRow, index > 0 && styles.line]}>
+              <PressScale containerStyle={styles.docName} onPress={() => void handleOpenDoc(doc)}>
+                <Text style={styles.docText} numberOfLines={1}>
+                  {doc.fileName}
+                </Text>
+              </PressScale>
+              <PressScale onPress={() => void handleDeleteDoc(doc)} label="刪除檔案" hitSlop={8}>
+                <Icon name="close" color={t.muted} size={18} />
+              </PressScale>
+            </View>
+          ))}
+          <PressScale
+            style={[styles.docRow, docs.length > 0 && styles.line]}
+            onPress={() => void handleAddDoc()}
+          >
+            <Text style={styles.docText}>附加機票</Text>
+            <Icon name="plus" color={t.muted} size={18} />
+          </PressScale>
+        </View>
+
+        <View style={styles.actions}>
+          <PressScale
+            containerStyle={styles.action}
+            style={styles.mapButton}
+            onPress={() => {
+              onClose();
+              onViewOnMap?.(flight);
+            }}
+          >
+            <Text style={styles.mapButtonText}>在地圖上看</Text>
+          </PressScale>
+          <ActionButton
+            variant="secondary"
+            label="更新動態"
+            busyLabel="查詢中…"
+            onPress={handleSyncStatus}
+          />
+        </View>
+
+        <View style={styles.quiet}>
+          <PressScale onPress={() => void toggleFinished()} hitSlop={8}>
+            <Text style={styles.quietText}>
+              {flight.isFinished ? '移回即將出發' : '標記為已完成'}
+            </Text>
+          </PressScale>
+          <PressScale onPress={() => void handleDelete()} hitSlop={8}>
+            <Text style={styles.deleteText}>刪除航班</Text>
+          </PressScale>
+        </View>
+      </ScrollView>
     </Modal>
   );
 }
 
-const styles = StyleSheet.create({
-  scrim: {
-    flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.75)',
-    justifyContent: 'flex-end',
-  },
-  scrimDismiss: {
-    flex: 1,
-  },
-  sheet: {
-    backgroundColor: theme.cardDark,
-    borderTopLeftRadius: radius.sheet,
-    borderTopRightRadius: radius.sheet,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.border,
-    maxHeight: '90%',
-  },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 20,
-    paddingTop: 20,
-    paddingBottom: 14,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: 'rgba(255, 255, 255, 0.08)',
-  },
-  headerRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  flightNumber: {
-    color: theme.text,
-    fontSize: 20,
-    fontWeight: '900',
-    letterSpacing: -0.5,
-  },
-  statusBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: radius.pill,
-    backgroundColor: theme.accentSoft,
-  },
-  statusBadgeFinished: {
-    backgroundColor: 'rgba(255, 255, 255, 0.08)',
-  },
-  statusBadgeText: {
-    color: theme.text,
-    fontSize: 10,
-    fontWeight: '800',
-    letterSpacing: 0.5,
-  },
-  headerRoute: {
-    color: theme.textFaint,
-    fontSize: 12,
-    marginTop: 3,
-  },
-  closeButton: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: 'rgba(255, 255, 255, 0.08)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  closeText: {
-    color: theme.textMuted,
-    fontSize: 14,
-    fontWeight: '700',
-  },
-  scroll: {
-    maxHeight: 560,
-  },
-  content: {
-    padding: 20,
-    gap: 14,
-  },
-  card: {
-    backgroundColor: theme.surfaceSolid,
-    borderRadius: radius.card,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.border,
-    padding: 16,
-    gap: 12,
-  },
-  airportsRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  airportCol: {
-    alignItems: 'flex-start',
-    gap: 3,
-  },
-  alignRight: {
-    alignItems: 'flex-end',
-  },
-  airportFlag: {
-    fontSize: 20,
-  },
-  airportIata: {
-    color: theme.text,
-    fontSize: 26,
-    fontWeight: '900',
-    letterSpacing: -0.5,
-  },
-  timeText: {
-    color: theme.onTimeGreen,
-    fontSize: 16,
-    fontWeight: '700',
-    fontVariant: ['tabular-nums'],
-  },
-  cityText: {
-    color: theme.textMuted,
-    fontSize: 11,
-    fontWeight: '600',
-  },
-  signBadge: {
-    backgroundColor: theme.airportSignBg,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: radius.sign,
-    marginTop: 4,
-  },
-  signBadgeText: {
-    color: theme.airportSignText,
-    fontSize: 11,
-    fontWeight: '900',
-    letterSpacing: 0.5,
-  },
-  flightMiddleCol: {
-    alignItems: 'center',
-    gap: 6,
-    flex: 1,
-    paddingHorizontal: 12,
-  },
-  durationText: {
-    color: theme.textFaint,
-    fontSize: 11,
-    fontWeight: '700',
-  },
-  routeLine: {
-    height: 2,
-    width: '100%',
-    backgroundColor: theme.accent,
-    borderRadius: 1,
-  },
-  milesText: {
-    color: theme.textFaint,
-    fontSize: 11,
-    fontWeight: '600',
-  },
-  baggageRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    paddingTop: 10,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: 'rgba(255, 255, 255, 0.08)',
-  },
-  baggageIcon: {
-    fontSize: 14,
-  },
-  baggageText: {
-    color: theme.textMuted,
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  viewOnMapBtn: {
-    backgroundColor: 'rgba(99, 102, 241, 0.12)',
-    borderWidth: 1,
-    borderColor: 'rgba(99, 102, 241, 0.3)',
-    borderRadius: radius.card - 4,
-    paddingVertical: 10,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginTop: 4,
-  },
-  viewOnMapText: {
-    color: '#818cf8',
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  gateEditorBox: {
-    backgroundColor: 'rgba(255, 255, 255, 0.04)',
-    borderRadius: radius.card - 4,
-    padding: 12,
-    gap: 10,
-    marginTop: 4,
-  },
-  gateEditorInputs: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  flex1: {
-    flex: 1,
-    gap: 4,
-  },
-  editorLabel: {
-    color: theme.textFaint,
-    fontSize: 10,
-    fontWeight: '700',
-  },
-  gateInput: {
-    backgroundColor: theme.surfaceElevated,
-    borderRadius: radius.card - 8,
-    paddingHorizontal: 8,
-    paddingVertical: 6,
-    color: theme.text,
-    fontSize: 12,
-    fontWeight: '700',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.border,
-  },
-  syncRow: {
-    paddingHorizontal: 4,
-  },
-  detailRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  detailCol: {
-    gap: 4,
-  },
-  detailLabel: {
-    color: theme.textFaint,
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  detailValue: {
-    color: theme.text,
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  notesText: {
-    color: theme.textMuted,
-    fontSize: 12,
-    lineHeight: 18,
-  },
-  divider: {
-    height: StyleSheet.hairlineWidth,
-    backgroundColor: 'rgba(255, 255, 255, 0.08)',
-  },
-  docsHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  docsTitleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  docsCountBadge: {
-    backgroundColor: theme.docsBadgePurple,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: radius.pill,
-  },
-  docsCountText: {
-    color: '#ffffff',
-    fontSize: 10,
-    fontWeight: '800',
-  },
-  addDocBtn: {
-    paddingVertical: 4,
-    paddingHorizontal: 8,
-  },
-  addDocBtnText: {
-    color: theme.accent,
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  docsList: {
-    gap: 8,
-  },
-  docItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'rgba(255, 255, 255, 0.04)',
-    borderRadius: radius.card - 4,
-    padding: 10,
-  },
-  docItemMain: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    flex: 1,
-  },
-  docIcon: {
-    fontSize: 20,
-  },
-  docTextCol: {
-    flex: 1,
-    gap: 2,
-  },
-  docName: {
-    color: theme.text,
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  docDeleteBtn: {
-    padding: 6,
-  },
-  docDeleteText: {
-    color: theme.textFaint,
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  tzSectionTitle: {
-    color: theme.textFaint,
-    fontSize: 11,
-    fontWeight: '800',
-    letterSpacing: 0.8,
-  },
-  tzHeadline: {
-    color: theme.text,
-    fontSize: 15,
-    fontWeight: '800',
-  },
-  bottomActions: {
-    gap: 12,
-    marginTop: 4,
-    marginBottom: 20,
-  },
-  deleteButton: {
-    paddingVertical: 12,
-    alignItems: 'center',
-  },
-  deleteButtonText: {
-    color: theme.danger,
-    fontSize: 13,
-    fontWeight: '700',
-  },
-});
+function placeLine(city: string | null | undefined, iata: string, terminal?: string | null): string {
+  return terminal ? `${city ?? iata}，航廈 ${terminal}` : (city ?? iata);
+}
+
+function durationText(minutes: number): string {
+  return `${Math.floor(minutes / 60)} 小時 ${minutes % 60} 分`;
+}
+
+function Fact({ label, value, first = false }: { label: string; value: string; first?: boolean }) {
+  const styles = useStyles(make);
+  return (
+    <View style={[styles.fact, !first && styles.line]}>
+      <Text style={styles.factLabel}>{label}</Text>
+      <Text style={styles.factValue}>{value}</Text>
+    </View>
+  );
+}
+
+function GateInput({
+  label,
+  value,
+  onChange,
+  caps = false,
+}: {
+  label: string;
+  value: string;
+  onChange: (text: string) => void;
+  caps?: boolean;
+}) {
+  const styles = useStyles(make);
+  return (
+    <View style={styles.input}>
+      <Text style={styles.factLabel}>{label}</Text>
+      <TextInput
+        style={styles.inputField}
+        value={value}
+        onChangeText={onChange}
+        autoCapitalize={caps ? 'characters' : 'none'}
+      />
+    </View>
+  );
+}
+
+const make = (t: Theme) =>
+  StyleSheet.create({
+    screen: { flex: 1, backgroundColor: t.ground },
+    content: { paddingHorizontal: 16, paddingTop: 48, paddingBottom: 32, gap: 12 },
+    back: {
+      width: 44,
+      height: 44,
+      borderRadius: 22,
+      backgroundColor: t.soft,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    times: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 8 },
+    alignEnd: { alignItems: 'flex-end' },
+    time: { color: t.ink, fontFamily: FONT.extraBold, fontSize: 30 },
+    place: { color: t.muted, fontSize: 14 },
+    group: { borderRadius: radius.group, backgroundColor: t.soft, overflow: 'hidden' },
+    line: { borderTopWidth: 1, borderTopColor: t.ground },
+    fact: {
+      minHeight: 46,
+      paddingHorizontal: 16,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      gap: 16,
+    },
+    factLabel: { color: t.muted, fontSize: 15 },
+    factValue: { color: t.ink, fontSize: 15, fontWeight: '500', flexShrink: 1, textAlign: 'right' },
+    editor: { padding: 12, gap: 10, borderTopWidth: 1, borderTopColor: t.ground },
+    inputs: { flexDirection: 'row', gap: 8 },
+    input: { flex: 1, gap: 4 },
+    inputField: {
+      height: 44,
+      paddingHorizontal: 12,
+      borderRadius: 14,
+      backgroundColor: t.ground,
+      color: t.ink,
+      fontSize: 16,
+      fontWeight: '700',
+    },
+    docRow: {
+      minHeight: 48,
+      paddingHorizontal: 16,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      gap: 12,
+    },
+    docName: { flex: 1 },
+    docText: { color: t.ink, fontSize: 15 },
+    actions: { flexDirection: 'row', gap: 10 },
+    action: { flexGrow: 1, flexBasis: 0 },
+    mapButton: {
+      height: 52,
+      borderRadius: radius.round,
+      backgroundColor: t.ink,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    mapButtonText: { color: '#FFFFFF', fontSize: 15, fontWeight: '700' },
+    quiet: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      paddingHorizontal: 8,
+      paddingVertical: 6,
+    },
+    quietText: { color: t.ink, fontSize: 14 },
+    deleteText: { color: SHARED.danger, fontSize: 14 },
+  });

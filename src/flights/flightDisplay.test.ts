@@ -4,9 +4,12 @@ import {
   airportLabel,
   airportTime,
   departureCountdown,
+  nextFlight,
   pastFlights,
   statusLabel,
+  ticketFor,
   upcomingFlights,
+  walletFlight,
 } from './flightDisplay';
 import type { FlightRecord } from './types';
 
@@ -132,5 +135,122 @@ describe('airportLabel', () => {
 
   test('is the code alone for a flight typed in with no city', () => {
     expect(airportLabel(null, 'TPE')).toBe('TPE');
+  });
+});
+
+describe('nextFlight', () => {
+  const on = (id: string, day: number, extra: Partial<FlightRecord> = {}): FlightRecord => ({
+    ...tpeLax,
+    id,
+    depScheduledUtc: Date.UTC(2026, 11, day),
+    arrScheduledUtc: Date.UTC(2026, 11, day, 12),
+    ...extra,
+  });
+  const NOW = Date.UTC(2026, 11, 5);
+
+  test('is the soonest one still to leave', () => {
+    expect(nextFlight([on('late', 20), on('soon', 10)], NOW)?.id).toBe('soon');
+  });
+
+  test('is one in the air before one still to come', () => {
+    const inAir = on('air', 4, { arrScheduledUtc: NOW + HOUR });
+    expect(nextFlight([on('soon', 10), inAir], NOW)?.id).toBe('air');
+  });
+
+  test('leaves out flights over, cancelled, or past their arrival', () => {
+    const flights = [
+      on('done', 10, { isFinished: true }),
+      on('off', 11, { status: 'CANCELLED' }),
+      on('gone', 1),
+    ];
+    expect(nextFlight(flights, NOW)).toBeNull();
+  });
+});
+
+describe('walletFlight', () => {
+  const on = (id: string, day: number, extra: Partial<FlightRecord> = {}): FlightRecord => ({
+    ...tpeLax,
+    id,
+    depScheduledUtc: Date.UTC(2026, 11, day),
+    arrScheduledUtc: Date.UTC(2026, 11, day, 12),
+    ...extra,
+  });
+  const NOW = Date.UTC(2026, 11, 5);
+
+  test('is the next flight when there is one', () => {
+    const flights = [on('flown', 1, { isFinished: true }), on('soon', 10)];
+
+    expect(walletFlight(flights, NOW)).toMatchObject({ flight: { id: 'soon' }, label: '下一班' });
+  });
+
+  test('is the last one flown when none is coming', () => {
+    const flights = [on('old', 1, { isFinished: true }), on('recent', 3, { isFinished: true })];
+
+    expect(walletFlight(flights, NOW)).toMatchObject({ flight: { id: 'recent' }, label: '上一班' });
+  });
+
+  // It was never flown, so it is nobody's last flight.
+  test('passes over a cancelled flight', () => {
+    const flights = [
+      on('flown', 1, { isFinished: true }),
+      on('off', 3, { status: 'CANCELLED', isFinished: true }),
+    ];
+
+    expect(walletFlight(flights, NOW)?.flight.id).toBe('flown');
+  });
+
+  test('is nothing with no flights', () => {
+    expect(walletFlight([], NOW)).toBeNull();
+  });
+});
+
+describe('ticketFor', () => {
+  const before = tpeLax.depScheduledUtc - 10 * 24 * HOUR;
+
+  test('shows the route and when it leaves, on the airport\'s clock', () => {
+    const ticket = ticketFor({ ...tpeLax, flightNumber: 'BR12' }, before);
+
+    expect(ticket.from).toBe('TPE');
+    expect(ticket.to).toBe('LAX');
+    expect(ticket.when).toBe('12 月 1 日 23:40');
+  });
+
+  test('counts the days down on the stub', () => {
+    const ticket = ticketFor(tpeLax, before);
+
+    expect([ticket.stubLabel, ticket.stubValue]).toEqual(['還有', '10 天']);
+    expect(ticket.past).toBe(false);
+  });
+
+  test('says when it leaves today', () => {
+    const ticket = ticketFor(tpeLax, tpeLax.depScheduledUtc - HOUR);
+
+    expect([ticket.stubLabel, ticket.stubValue]).toEqual(['今天', '出發']);
+  });
+
+  test('says it is in the air', () => {
+    expect(ticketFor(tpeLax, tpeLax.depScheduledUtc + HOUR).stubValue).toBe('飛行中');
+  });
+
+  test('asks about one past its arrival that nobody confirmed', () => {
+    expect(ticketFor(tpeLax, tpeLax.arrScheduledUtc + HOUR).stubValue).toBe('待確認');
+  });
+
+  test('a flight flown keeps its seat on the stub', () => {
+    const ticket = ticketFor({ ...tpeLax, isFinished: true, seat: '62H' }, 0);
+
+    expect([ticket.stubLabel, ticket.stubValue]).toEqual(['座位', '62H']);
+    expect(ticket.past).toBe(true);
+  });
+
+  test('a flight flown with no seat just says so', () => {
+    expect(ticketFor({ ...tpeLax, isFinished: true }, 0).stubValue).toBe('已完成');
+  });
+
+  test('a cancelled flight says so, whatever else is true', () => {
+    const ticket = ticketFor({ ...tpeLax, status: 'CANCELLED', seat: '62H' }, before);
+
+    expect(ticket.stubValue).toBe('已取消');
+    expect(ticket.past).toBe(true);
   });
 });

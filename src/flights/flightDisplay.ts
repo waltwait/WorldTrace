@@ -76,3 +76,61 @@ export function pastFlights(flights: readonly FlightRecord[]): FlightRecord[] {
 export function airportLabel(city: string | null | undefined, iata: string): string {
   return city ? `${city} (${iata})` : iata;
 }
+
+/** The flight the overview shows: in the air, or the soonest still to leave. */
+export function nextFlight(flights: readonly FlightRecord[], now: number): FlightRecord | null {
+  return upcomingFlights(flights).find((f) => now < f.arrScheduledUtc) ?? null;
+}
+
+/**
+ * The flight on the first page: the next one, or the last one flown when none is
+ * coming. A cancelled flight was never flown, so it is nobody's last flight.
+ */
+export function walletFlight(
+  flights: readonly FlightRecord[],
+  now: number,
+): { flight: FlightRecord; label: string } | null {
+  const next = nextFlight(flights, now);
+  if (next) return { flight: next, label: '下一班' };
+
+  const last = pastFlights(flights).find((f) => f.status !== 'CANCELLED');
+  return last ? { flight: last, label: '上一班' } : null;
+}
+
+export interface TicketView {
+  from: string;
+  to: string;
+  /** When it leaves, on the departure airport's clock. */
+  when: string;
+  stubLabel: string;
+  stubValue: string;
+  past: boolean;
+}
+
+/** What one flight's ticket says. The stub answers the question of the moment. */
+export function ticketFor(flight: FlightRecord, now: number): TicketView {
+  const { date, time } = utcToLocal(flight.depScheduledUtc, flight.depTz);
+  const [, month, day] = date.split('-').map(Number);
+  const past = isOver(flight);
+  const countdown = departureCountdown(flight, now);
+
+  const stub = (): { stubLabel: string; stubValue: string } => {
+    if (flight.status === 'CANCELLED') return { stubLabel: '', stubValue: '已取消' };
+    if (flight.isFinished) {
+      return flight.seat
+        ? { stubLabel: '座位', stubValue: flight.seat }
+        : { stubLabel: '', stubValue: '已完成' };
+    }
+    if (countdown === '今日出發') return { stubLabel: '今天', stubValue: '出發' };
+    if (countdown.endsWith(' 天')) return { stubLabel: '還有', stubValue: countdown };
+    return { stubLabel: '', stubValue: countdown };
+  };
+
+  return {
+    from: flight.depIata,
+    to: flight.arrIata,
+    when: `${month} 月 ${day} 日 ${time}`,
+    past,
+    ...stub(),
+  };
+}

@@ -14,6 +14,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Animated, Easing, type StyleProp, type TextProps, type TextStyle } from 'react-native';
 import { CURVE, DURATION, SWAP_OFFSET } from './motion';
 import { useReducedMotion } from './useReducedMotion';
+import { textStyle } from './Text';
 
 export function SwapText({
   text,
@@ -75,7 +76,7 @@ export function SwapText({
 
   return (
     <Animated.Text
-      style={[style, { opacity, transform: [{ translateY: offset }] }]}
+      style={[textStyle(style), { opacity, transform: [{ translateY: offset }] }]}
       numberOfLines={numberOfLines}
       ellipsizeMode={ellipsizeMode}
     >
