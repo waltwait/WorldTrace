@@ -13,6 +13,7 @@ import { apiKey } from '../settings/expoKeyStore';
 import { database } from '../store/database';
 import { refreshDueFlights } from '../store/flightRefresh';
 import { listFlights } from '../store/flights';
+import { oneAtATime } from './oneAtATime';
 
 export interface FlightsState {
   flights: FlightRecord[];
@@ -31,31 +32,36 @@ export function useFlights(): FlightsState {
   const [refreshing, setRefreshing] = useState(false);
   const [failed, setFailed] = useState(false);
 
-  const refresh = useCallback(async () => {
-    try {
-      const db = await database();
-      // What is on the phone first: the polls that follow can take as long as
-      // the network does.
-      setFlights(await listFlights(db));
-      setLoading(false);
-      setFailed(false);
+  // One at a time: the launch refresh and a pull can meet, and each poll costs.
+  const refresh = useMemo(
+    () =>
+      oneAtATime(async () => {
+        try {
+          const db = await database();
+          // What is on the phone first: the polls that follow can take as long as
+          // the network does.
+          setFlights(await listFlights(db));
+          setLoading(false);
+          setFailed(false);
 
-      const port = createAeroDataBoxPort((await apiKey('flightStatus')) ?? undefined);
-      setFlights(await refreshDueFlights(db, port, Date.now()));
-    } catch {
-      // Said on the page: an empty list would claim there are no flights.
-      setFailed(true);
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
-  }, []);
+          const port = createAeroDataBoxPort((await apiKey('flightStatus')) ?? undefined);
+          setFlights(await refreshDueFlights(db, port, Date.now()));
+        } catch {
+          // Said on the page: an empty list would claim there are no flights.
+          setFailed(true);
+        } finally {
+          setLoading(false);
+          setRefreshing(false);
+        }
+      }),
+    [],
+  );
 
   useEffect(() => {
     void refresh();
   }, [refresh]);
 
-  // Coming back to the app can be the moment a flight has left. A new array is
+  // Coming back to the app can be the moment a flight has landed. A new array is
   // enough for that; the polls keep to their own schedule.
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (state) => {
