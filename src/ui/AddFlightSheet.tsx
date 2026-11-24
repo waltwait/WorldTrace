@@ -30,6 +30,7 @@ import { ActionButton } from './ActionButton';
 import { DateField } from './DateField';
 import { FadeIn } from './FadeIn';
 import { createAfterClose } from './afterClose';
+import { waitingAfterShowing } from './ticketQueue';
 import { FullScreenModal } from './FullScreenModal';
 import { Icon } from './Icon';
 import { PressScale } from './PressScale';
@@ -122,7 +123,7 @@ export const AddFlightSheet = memo(function AddFlightSheet({
         formFromTicket(ticket, legs, keepTyped ? f : { ...EMPTY_FLIGHT_FORM, notes: f.notes }),
       );
       setLegs(legs);
-      setPendingTickets(rest);
+      setPendingTickets((waiting) => waitingAfterShowing(waiting, rest, keepTyped));
       setNeedsTyping(legs.length === 0);
       if (legs.length > 0) setTicketRevealKey((n) => n + 1);
       setErrorMsg(notice ?? (ticket.yearGuessed ? '票面沒印年份，請確認日期' : null));
