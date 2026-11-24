@@ -30,7 +30,7 @@ import { ActionButton } from './ActionButton';
 import { DateField } from './DateField';
 import { FadeIn } from './FadeIn';
 import { createAfterClose } from './afterClose';
-import { waitingAfterShowing } from './ticketQueue';
+import { finishSave, waitingAfterShowing } from './ticketQueue';
 import { FullScreenModal } from './FullScreenModal';
 import { Icon } from './Icon';
 import { PressScale } from './PressScale';
@@ -281,17 +281,16 @@ export const AddFlightSheet = memo(function AddFlightSheet({
 
       afterClose.add(() => onFlightAdded(flight));
 
-      if (pendingTickets.length > 0) {
-        // The same ticket covers the next leg, so it stays attached.
-        await advanceQueue(pendingTickets);
-        return { ok: true as const, message: `已加入 ${flight.flightNumber}` };
-      }
-
-      // The sheet stays mounted between adds; without this the next flight
-      // would get this one's ticket attached and could be saved twice.
-      afterClose.add(reset);
-      onClose();
-      return { ok: true as const, message: '已加入旅途' };
+      // The same ticket covers a next leg, so it stays attached until the sheet
+      // closes; then it is cleared, whether or not every leg was saved.
+      const done = await finishSave(pendingTickets, afterClose, {
+        advance: advanceQueue,
+        clear: reset,
+        close: onClose,
+      });
+      return done === 'next'
+        ? { ok: true as const, message: `已加入 ${flight.flightNumber}` }
+        : { ok: true as const, message: '已加入旅途' };
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : String(err));
       return { ok: false as const };
