@@ -26,6 +26,8 @@ const HALF_A_YEAR_DAYS = 182;
 const NEAR_TIMETABLE_DAYS = 28;
 
 const NOT_FOUND = '查不到這班航班，請手動填寫';
+// Said instead of borrowing another day: a failed request knows nothing of the flight.
+const NO_ANSWER = '連不上航班資料，請稍後再試';
 const BORROWED_OLD = '日期太舊，航線和時間取自近期班次，請確認';
 const BORROWED_NEARBY = '查不到當日班表，航線和時間取自鄰近班次，請確認';
 
@@ -201,6 +203,7 @@ async function firstFoundOn(
   // One at a time: each costs, and the first answer is the best one.
   for (const standIn of tries) {
     const legs = await port.findFlights(flightNumber, standIn);
+    if (legs === null) return { legs: [], notice: NO_ANSWER };
     if (legs.length > 0) {
       return {
         legs: legs.map((leg) => movedToDate(leg, targetDate)),
@@ -219,6 +222,7 @@ export async function lookUpFlight(
 ): Promise<{ legs: LookedUpFlight[]; notice: string | null }> {
   if (isWithinLookup(date, now)) {
     const legs = await port.findFlights(flightNumber, date);
+    if (legs === null) return { legs: [], notice: NO_ANSWER };
     if (legs.length > 0) return { legs, notice: null };
 
     const known = (await port.flightDates?.(flightNumber)) ?? null;

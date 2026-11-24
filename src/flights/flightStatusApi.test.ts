@@ -406,7 +406,7 @@ describe('flightStatusApi', () => {
       test('gives everything a flight needs, the airports included', async () => {
         const port = createAeroDataBoxPort('key', fakeFetch([answer]));
 
-        const [flight] = await port.findFlights('JX871', '2027-03-03');
+        const [flight] = (await port.findFlights('JX871', '2027-03-03')) ?? [];
 
         expect(flight).toEqual({
           flightNumber: 'JX871',
@@ -439,7 +439,7 @@ describe('flightStatusApi', () => {
         const { greatCircleDistance: _left, ...noDistance } = answer;
         const port = createAeroDataBoxPort('key', fakeFetch([noDistance]));
 
-        const [flight] = await port.findFlights('JX871', '2027-03-03');
+        const [flight] = (await port.findFlights('JX871', '2027-03-03')) ?? [];
 
         expect(flight.distanceKm).toBeGreaterThan(600);
         expect(flight.distanceKm).toBeLessThan(700);
@@ -474,10 +474,24 @@ describe('flightStatusApi', () => {
         expect(seen).toEqual([]);
       });
 
-      test('gives nothing when the request fails', async () => {
-        const failing = (async () => ({ ok: false })) as unknown as typeof fetch;
+      // Offline, a timeout, a spent quota or a server error says nothing about
+      // the flight. Read as "none that day", it sent the lookup off borrowing
+      // another day's times, at 2 units a try.
+      test('says no answer came back when the request fails, not that there is no flight', async () => {
+        for (const status of [429, 500, 503, 401]) {
+          const failing = (async () => ({ ok: false, status })) as unknown as typeof fetch;
+          expect(await createAeroDataBoxPort('key', failing).findFlights('JX871', '2027-03-03')).toBeNull();
+        }
+        const offline = (async () => {
+          throw new TypeError('Network request failed');
+        }) as unknown as typeof fetch;
+        expect(await createAeroDataBoxPort('key', offline).findFlights('JX871', '2027-03-03')).toBeNull();
+      });
 
-        expect(await createAeroDataBoxPort('key', failing).findFlights('JX871', '2027-03-03')).toEqual([]);
+      // The API refuses a date outside its year: that day has nothing to give.
+      test('takes a refused date (400) as no flight that day', async () => {
+        const refused = (async () => ({ ok: false, status: 400 })) as unknown as typeof fetch;
+        expect(await createAeroDataBoxPort('key', refused).findFlights('JX871', '2027-03-03')).toEqual([]);
       });
     });
 

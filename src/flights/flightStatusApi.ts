@@ -33,8 +33,12 @@ export interface FlightStatusPort {
 }
 
 export interface FlightLookupPort {
-  /** Every leg that number flies on that day at its origin; none if unknown. */
-  findFlights(flightNumber: string, dateLocal: string): Promise<LookedUpFlight[]>;
+  /**
+   * Every leg that number flies on that day at its origin; none if unknown.
+   * Null when no answer came back — offline, a timeout, a spent quota, a server
+   * error — which says nothing about the flight and must not be taken as none.
+   */
+  findFlights(flightNumber: string, dateLocal: string): Promise<LookedUpFlight[] | null>;
   /** The local dates that number has flown on, as far as the API will say; null if not. */
   flightDates?(flightNumber: string): Promise<string[] | null>;
 }
@@ -46,6 +50,9 @@ export interface FlightLookupPort {
  * waits for the user to mark it.
  */
 const STOP_POLLING_AFTER_ARRIVAL_MS = 24 * 3600 * 1000;
+
+/** What a request answers when the API refused it as asked: that day has nothing. */
+const REFUSED = Symbol('refused');
 
 /** Trips is the first page: a request that hangs must not hold it up. */
 const REQUEST_TIMEOUT_MS = 15_000;
@@ -289,7 +296,9 @@ export function createAeroDataBoxPort(
       if (!res.ok) {
         // The status is the only thing that tells a refused date from a spent quota.
         console.warn('[WorldTrace] flight lookup refused', res.status);
-        return null;
+        // A date outside the API's year (400), or a number it does not know,
+        // is an answer: nothing there. Anything else is no answer at all.
+        return res.status === 400 || res.status === 404 ? REFUSED : null;
       }
 
       // 204, nothing known, has no body to read; returning [] tells an empty
@@ -312,7 +321,8 @@ export function createAeroDataBoxPort(
     // and comes first: a search for the 12th gave the 11th, and a poll that flight's gate.
     const data = (await request(
       `${numberPath(flightNumber)}/${dateLocal}?dateLocalRole=Departure`,
-    )) as AeroDataBoxLeg | AeroDataBoxLeg[] | null;
+    )) as AeroDataBoxLeg | AeroDataBoxLeg[] | typeof REFUSED | null;
+    if (data === REFUSED) return [];
     if (!data) return null;
     return Array.isArray(data) ? data : [data];
   }
@@ -348,9 +358,13 @@ export function createAeroDataBoxPort(
     },
 
     async findFlights(flightNumber, dateLocal) {
+      // No key is no question asked: nothing to report, and the sheet asks
+      // for a key before it gets here.
+      if (!apiKey) return [];
       const legs = await fetchLegs(flightNumber, dateLocal);
+      if (legs === null) return null;
       const cleanNum = cleanFlightNumber(flightNumber);
-      return (legs ?? []).flatMap((leg) => toLookedUpFlight(leg, cleanNum) ?? []);
+      return legs.flatMap((leg) => toLookedUpFlight(leg, cleanNum) ?? []);
     },
   };
 }

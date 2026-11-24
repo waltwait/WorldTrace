@@ -168,6 +168,43 @@ describe('lookUpFlight', () => {
     expect(notice).toBeNull();
   });
 
+  test('stops and says so when the request for the date itself gets no answer', async () => {
+    const lookup = { findFlights: vi.fn(async () => null), flightDates: vi.fn(async () => null) };
+
+    const { legs, notice } = await lookUpFlight(lookup, 'BR198', '2026-06-21', NOW);
+
+    expect(legs).toEqual([]);
+    expect(notice).toContain('連不上');
+    expect(lookup.findFlights).toHaveBeenCalledTimes(1);
+    expect(lookup.flightDates).not.toHaveBeenCalled();
+  });
+
+  // A stand-in day that answers after one that failed would put another day's
+  // times on the flight, when only the request had gone wrong.
+  test('stops at the first stand-in day that gets no answer, borrowing nothing', async () => {
+    const answers: Array<LookedUpFlight[] | null> = [[], null, [leg]];
+    const lookup = {
+      findFlights: vi.fn(async () => (answers.length > 0 ? (answers.shift() as LookedUpFlight[] | null) : [])),
+      flightDates: vi.fn(async () => ['2026-06-20', '2026-06-14']),
+    };
+
+    const { legs, notice } = await lookUpFlight(lookup, 'BR198', '2026-06-21', NOW);
+
+    expect(legs).toEqual([]);
+    expect(notice).toContain('連不上');
+    expect(lookup.findFlights).toHaveBeenCalledTimes(2);
+  });
+
+  test('stops when an old date\'s stand-in gets no answer', async () => {
+    const lookup = { findFlights: vi.fn(async () => null), flightDates: vi.fn(async () => null) };
+
+    const { legs, notice } = await lookUpFlight(lookup, 'BR198', '2018-06-21', NOW);
+
+    expect(legs).toEqual([]);
+    expect(notice).toContain('連不上');
+    expect(lookup.findFlights).toHaveBeenCalledTimes(1);
+  });
+
   test('says when a date it could ask for found nothing', async () => {
     const lookup = port({});
 
