@@ -180,8 +180,11 @@ export function buildYearShareModel(
   aspect: CardAspect,
 ): YearShareModel {
   const trips = passportTrips(flights, home, year);
-  // Keep cross-New-Year trips whole in the year they began so totals and trip rows agree.
-  const targetFlights = year === null ? [...flights] : trips.flatMap((t) => t.flights);
+  // The trips' flights, for ALL as for a year: those are the flown ones, so the
+  // arcs agree with the totals beside them. Every flight, for ALL, drew a
+  // booked or a cancelled one too. A cross-New-Year trip stays whole in the
+  // year it began.
+  const targetFlights = trips.flatMap((t) => t.flights);
   const stats = computePassportStats(targetFlights, home);
   const stamps = countryStamps(targetFlights, home);
 

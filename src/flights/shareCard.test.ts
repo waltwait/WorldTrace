@@ -191,6 +191,27 @@ describe('buildYearShareModel', () => {
     expect(y2026.fileName).toBe('worldtrace-passport-2026-9x16.png');
   });
 
+  // The ALL card drew an arc for every flight, while its totals counted only
+  // the flown: a booked trip next month, or a cancelled one, was on the
+  // picture and not in the numbers beside it.
+  test('the ALL card draws only flights flown, like its totals', () => {
+    const flown = leg('1', '2026-03-02T01:00:00Z', TPE, NRT);
+    const back = leg('2', '2026-03-06T06:00:00Z', NRT, TPE);
+    const booked = leg('3', '2027-02-02T01:00:00Z', TPE, LHR, 14, {
+      status: 'SCHEDULED',
+      isFinished: false,
+    });
+    const cancelled = leg('4', '2026-05-02T01:00:00Z', TPE, HKG, 2, {
+      status: 'CANCELLED',
+      isFinished: false,
+    });
+
+    const all = buildYearShareModel([flown, back, booked, cancelled], 'TW', null, '9:16');
+
+    expect(all.flights.map((f) => f.id).sort()).toEqual(['1', '2']);
+    expect(all.totalFlights).toBe(2);
+  });
+
   test('formats open-jaw routes with a middle dot and caps rows per aspect ratio', () => {
     const destinations = [NRT, ICN, SIN, BKK, DAD, MNL, LHR];
     const flights = destinations.flatMap((dest, idx) => {
