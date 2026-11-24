@@ -33,15 +33,6 @@ export function formatArea(squareMeters: number): string {
  * walk. Two decimals keep a short outing visible — 46 m still reads as
  * 0.05 km rather than rounding away to nothing.
  */
-export function formatFlightDistance(km: number | null | undefined): string {
-  return km == null ? '—' : formatDistance(km * METERS_PER_KM);
-}
-
-/** A total of flying. It is rounded already, so it claims no decimals. */
-export function formatWholeKm(km: number | null | undefined): string {
-  return km == null ? '—' : `${Math.round(km).toLocaleString('en-US')} km`;
-}
-
 export function formatDistance(meters: number): string {
   const km = meters / METERS_PER_KM;
 
@@ -49,6 +40,16 @@ export function formatDistance(meters: number): string {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   })} km`;
+}
+
+/** One flight's distance, the same way; a dash for a flight with none known. */
+export function formatFlightDistance(km: number | null | undefined): string {
+  return km == null ? '—' : formatDistance(km * METERS_PER_KM);
+}
+
+/** A total of flying. It is rounded already, so it claims no decimals. */
+export function formatWholeKm(km: number | null | undefined): string {
+  return km == null ? '—' : `${Math.round(km).toLocaleString('en-US')} km`;
 }
 
 /**
