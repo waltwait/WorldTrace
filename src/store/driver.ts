@@ -29,6 +29,15 @@ export interface SqlDriver {
   all<T>(sql: string, params?: SqlValue[]): Promise<T[]>;
   get<T>(sql: string, params?: SqlValue[]): Promise<T | undefined>;
   /**
+   * Run `work` as one transaction: everything it wrote is kept, or none of it.
+   *
+   * Statements inside must go through `tx`, not this driver. Both connections
+   * are shared by callers that interleave at every await, so a plain BEGIN on
+   * one would sweep another caller's writes into the transaction — and roll
+   * them back with it. On the phone `tx` is a connection of its own.
+   */
+  transaction<T>(work: (tx: SqlDriver) => Promise<T>): Promise<T>;
+  /**
    * Release the underlying file.
    *
    * Needed before the database file is replaced: an open connection to a file

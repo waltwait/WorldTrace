@@ -34,7 +34,7 @@ export function countingDriver(inner: SqlDriver): CountingDriver {
     }
   };
 
-  return {
+  const driver: CountingDriver = {
     queries,
     get rowsRead() {
       return rowsRead;
@@ -64,6 +64,9 @@ export function countingDriver(inner: SqlDriver): CountingDriver {
       if (row !== undefined) rowsRead += 1;
       return row;
     },
+    // The work's statements come back through here, so they are counted too.
+    transaction: (work) => inner.transaction(() => work(driver)),
     close: () => inner.close(),
   };
+  return driver;
 }

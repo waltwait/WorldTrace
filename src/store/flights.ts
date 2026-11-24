@@ -110,20 +110,19 @@ function rowToDoc(row: FlightDocRow): FlightDocRecord {
 }
 
 export async function insertFlight(driver: SqlDriver, flight: FlightRecord): Promise<void> {
-  try {
+  // The list joins all three: a flight half written would just vanish. A
+  // catch that deleted the first row only helped when a statement threw, not
+  // when the app was killed between two of them, so it is one transaction.
+  await driver.transaction(async (tx) => {
     for (const { name, key, columns } of TABLES) {
       const fields = Object.keys(columns) as Array<keyof FlightRecord>;
       const names = [key, ...fields.map((field) => columns[field])];
-      await driver.run(
+      await tx.run(
         `INSERT OR REPLACE INTO ${name} (${names.join(', ')}) VALUES (${names.map(() => '?').join(', ')})`,
         [flight.id, ...fields.map((field) => toSql(flight[field]))],
       );
     }
-  } catch (err) {
-    // The list joins all three: a flight half written would just vanish.
-    await deleteFlight(driver, flight.id);
-    throw err;
-  }
+  });
 }
 
 export async function getFlightById(driver: SqlDriver, id: string): Promise<FlightRecord | null> {

@@ -3,7 +3,8 @@ import type { SqlDriver } from './driver';
 import { sharedConnection } from './sharedConnection';
 
 function fakeDriver(log: string[], name: string): SqlDriver {
-  return {
+  const driver: SqlDriver = {
+    transaction: (work) => work(driver),
     exec: async () => {},
     run: async () => ({ lastInsertRowId: 0, changes: 0 }),
     all: async () => [],
@@ -12,6 +13,7 @@ function fakeDriver(log: string[], name: string): SqlDriver {
       log.push(`close ${name}`);
     },
   };
+  return driver;
 }
 
 /** Opens drivers named 1, 2, …; `prepare` fails while `failing` says so. */

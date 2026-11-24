@@ -13,7 +13,7 @@ export function createNodeDriver(path = ':memory:'): SqlDriver {
   const db = new DatabaseSync(path);
   db.exec('PRAGMA foreign_keys = ON');
 
-  return {
+  const driver: SqlDriver = {
     async exec(sql) {
       db.exec(sql);
     },
@@ -27,8 +27,21 @@ export function createNodeDriver(path = ':memory:'): SqlDriver {
     async get<T>(sql: string, params: SqlValue[] = []) {
       return db.prepare(sql).get(...params) as T | undefined;
     },
+    async transaction(work) {
+      // Tests run one thing at a time, so the same connection will do.
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        const result = await work(driver);
+        db.exec('COMMIT');
+        return result;
+      } catch (err) {
+        db.exec('ROLLBACK');
+        throw err;
+      }
+    },
     async close() {
       db.close();
     },
   };
+  return driver;
 }
