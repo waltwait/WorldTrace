@@ -8,17 +8,12 @@
 import type { SqlDriver } from './driver';
 import { createExpoDriver } from './expoDriver';
 import { migrate } from './schema';
+import { sharedConnection } from './sharedConnection';
 
-let instance: Promise<SqlDriver> | null = null;
+const connection = sharedConnection(createExpoDriver, migrate);
 
 export function database(): Promise<SqlDriver> {
-  instance ??= (async () => {
-    const driver = await createExpoDriver();
-    await migrate(driver);
-    return driver;
-  })();
-
-  return instance;
+  return connection.get();
 }
 
 /**
@@ -28,15 +23,6 @@ export function database(): Promise<SqlDriver> {
  * across a swap does not fail loudly — it goes on answering reads from a file
  * that no longer exists and refuses every write.
  */
-export async function closeDatabase(): Promise<void> {
-  const open = instance;
-  instance = null;
-  if (open === null) return;
-
-  try {
-    await (await open).close();
-  } catch {
-    // Already gone, or never finished opening. Either way the cache is
-    // cleared, which is the part that matters.
-  }
+export function closeDatabase(): Promise<void> {
+  return connection.close();
 }

@@ -14,6 +14,11 @@ export const DATABASE_NAME = 'worldtrace.db';
 export async function createExpoDriver(name = DATABASE_NAME): Promise<SqlDriver> {
   const db = await SQLite.openDatabaseAsync(name);
   await db.execAsync('PRAGMA foreign_keys = ON');
+  // Two connections write this file: the screens' and the background task's.
+  // Without a busy timeout a write that meets the other's lock fails at once
+  // with SQLITE_BUSY — on the screens' side that could be the flight
+  // migration on first launch. Wait for the lock instead.
+  await db.execAsync('PRAGMA busy_timeout = 5000');
 
   return {
     async exec(sql) {
