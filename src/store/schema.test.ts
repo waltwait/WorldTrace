@@ -216,6 +216,14 @@ describe('moving flights to the three tables', () => {
   // The table of airports these came from is gone, and these flights were never
   // looked up: nothing can fill this in later. Without it the passport loses
   // their stamps and the map their arcs.
+  // The first version stored 0 for a distance it could not work out.
+  test('keeps an unknown distance unknown, not 0 km', async () => {
+    await driver.run(`UPDATE flights SET distance_miles = 0 WHERE id = 'f'`);
+    await migrate(driver);
+
+    expect((await getFlightById(driver, 'f'))?.distanceKm).toBeNull();
+  });
+
   test('keeps the country, city and position of each end', async () => {
     await migrate(driver);
 

@@ -174,7 +174,9 @@ async function moveRow(driver: SqlDriver, old: OldFlight): Promise<void> {
     // and never looked these flights up: nothing can fill them in later.
     ...place(old.dep_iata, 'dep'),
     ...place(old.arr_iata, 'arr'),
-    distance_km: old.distance_miles * KM_PER_MILE,
+    // 0 was how the first version said it had no distance (an airport its
+    // table lacked); moved as 0 it read as a real 0 km.
+    distance_km: old.distance_miles > 0 ? old.distance_miles * KM_PER_MILE : null,
     duration_minutes: old.duration_minutes,
   });
   await insert(driver, 'flight_status', {
