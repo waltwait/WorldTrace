@@ -287,7 +287,7 @@ function FlightDetailContent({
         </View>
 
         <View style={styles.group}>
-          <Fact label="狀態" value={statusLabel(flight)} first />
+          <Fact label="狀態" value={statusLabel(flight, Date.now())} first />
           <Fact label="飛行時間" value={durationText(flight.durationMinutes)} />
           <Fact label="距離" value={formatFlightDistance(flight.distanceKm)} />
           {timeDifference.hasDifference ? <Fact label="時差" value={timeDifference.headline} /> : null}

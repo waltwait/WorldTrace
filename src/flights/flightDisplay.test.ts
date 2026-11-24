@@ -6,7 +6,7 @@ import {
   departureCountdown,
   nextFlight,
   pastFlights,
-  settleDeparted,
+  settleArrived,
   statusLabel,
   ticketFor,
   upcomingFlights,
@@ -81,16 +81,16 @@ describe('departureCountdown', () => {
 
 describe('statusLabel', () => {
   test('says the status in Chinese', () => {
-    expect(statusLabel({ ...tpeLax, status: 'SCHEDULED' })).toBe('已排定');
-    expect(statusLabel({ ...tpeLax, status: 'BOARDING' })).toBe('登機中');
-    expect(statusLabel({ ...tpeLax, status: 'IN_AIR' })).toBe('飛行中');
-    expect(statusLabel({ ...tpeLax, status: 'LANDED' })).toBe('已降落');
-    expect(statusLabel({ ...tpeLax, status: 'DELAYED' })).toBe('延誤');
+    expect(statusLabel({ ...tpeLax, status: 'SCHEDULED' }, 0)).toBe('已排定');
+    expect(statusLabel({ ...tpeLax, status: 'BOARDING' }, 0)).toBe('登機中');
+    expect(statusLabel({ ...tpeLax, status: 'IN_AIR' }, 0)).toBe('飛行中');
+    expect(statusLabel({ ...tpeLax, status: 'LANDED' }, 0)).toBe('已降落');
+    expect(statusLabel({ ...tpeLax, status: 'DELAYED' }, 0)).toBe('延誤');
   });
 
   test('a finished flight is finished, but a cancelled one stays cancelled', () => {
-    expect(statusLabel({ ...tpeLax, isFinished: true })).toBe('已完成');
-    expect(statusLabel({ ...tpeLax, status: 'CANCELLED', isFinished: true })).toBe('已取消');
+    expect(statusLabel({ ...tpeLax, isFinished: true }, 0)).toBe('已完成');
+    expect(statusLabel({ ...tpeLax, status: 'CANCELLED', isFinished: true }, 0)).toBe('已取消');
   });
 });
 
@@ -168,48 +168,78 @@ describe('nextFlight', () => {
   });
 });
 
-describe('settleDeparted', () => {
+describe('settleArrived', () => {
   const DEPARTS = Date.UTC(2026, 11, 1, 15, 40);
-  const flight: FlightRecord = { ...tpeLax, depScheduledUtc: DEPARTS, isFinished: false };
+  const ARRIVES = Date.UTC(2026, 11, 2, 3, 30);
+  const flight: FlightRecord = {
+    ...tpeLax,
+    depScheduledUtc: DEPARTS,
+    arrScheduledUtc: ARRIVES,
+    isFinished: false,
+  };
 
-  test('finishes a flight once it has left', () => {
-    expect(settleDeparted([flight], DEPARTS + HOUR)[0].isFinished).toBe(true);
+  // The user's call: in the air it is still the flight being followed, with
+  // its gate and belt still to come.
+  test('leaves a flight in the air unfinished: upcoming, and the next flight', () => {
+    const settled = settleArrived([flight], DEPARTS + HOUR);
+
+    expect(settled[0].isFinished).toBe(false);
+    expect(upcomingFlights(settled)).toHaveLength(1);
+    expect(nextFlight(settled, DEPARTS + HOUR)?.id).toBe(flight.id);
   });
 
-  test('counts from the minute it leaves', () => {
-    expect(settleDeparted([flight], DEPARTS)[0].isFinished).toBe(true);
-    expect(settleDeparted([flight], DEPARTS - 1)[0].isFinished).toBe(false);
+  test('finishes it from the minute it lands', () => {
+    expect(settleArrived([flight], ARRIVES)[0].isFinished).toBe(true);
+    expect(settleArrived([flight], ARRIVES - 1)[0].isFinished).toBe(false);
   });
 
-  // Its own departure is the one that matters, and it has not happened yet.
-  test('waits for a delayed flight', () => {
-    const delayed = { ...flight, depEstimatedUtc: DEPARTS + 3 * HOUR };
+  test('waits for a late arrival', () => {
+    const late = { ...flight, arrEstimatedUtc: ARRIVES + 2 * HOUR };
 
-    expect(settleDeparted([delayed], DEPARTS + HOUR)[0].isFinished).toBe(false);
-    expect(settleDeparted([delayed], DEPARTS + 4 * HOUR)[0].isFinished).toBe(true);
+    expect(settleArrived([late], ARRIVES + HOUR)[0].isFinished).toBe(false);
+    expect(settleArrived([late], ARRIVES + 3 * HOUR)[0].isFinished).toBe(true);
   });
 
-  // This is what it went wrong on before: a cancelled flight is never flown.
   test('never finishes a cancelled flight', () => {
     const cancelled = { ...flight, status: 'CANCELLED' as const };
 
-    expect(settleDeparted([cancelled], DEPARTS + HOUR)[0].isFinished).toBe(false);
+    expect(settleArrived([cancelled], ARRIVES + HOUR)[0].isFinished).toBe(false);
   });
 
   test('leaves the status alone', () => {
-    expect(settleDeparted([flight], DEPARTS + HOUR)[0].status).toBe(flight.status);
+    expect(settleArrived([flight], ARRIVES + HOUR)[0].status).toBe(flight.status);
   });
 
   test('hands back a flight it did not change', () => {
-    expect(settleDeparted([flight], DEPARTS - HOUR)[0]).toBe(flight);
+    expect(settleArrived([flight], DEPARTS + HOUR)[0]).toBe(flight);
   });
 
-  test('reads as finished, and moves to the past', () => {
-    const settled = settleDeparted([flight], DEPARTS + HOUR);
+  test('reads as finished once landed, and moves to the past', () => {
+    const settled = settleArrived([flight], ARRIVES + HOUR);
 
-    expect(statusLabel(settled[0])).toBe('已完成');
+    expect(statusLabel(settled[0], ARRIVES + HOUR)).toBe('已完成');
     expect(pastFlights(settled)).toHaveLength(1);
     expect(upcomingFlights(settled)).toHaveLength(0);
+  });
+});
+
+describe('in the air', () => {
+  const DEPARTS = tpeLax.depScheduledUtc;
+
+  test('reads 飛行中 between departure and arrival, before any poll has said so', () => {
+    const unpolled = { ...tpeLax, status: 'SCHEDULED' as const };
+
+    expect(statusLabel(unpolled, DEPARTS + HOUR)).toBe('飛行中');
+    expect(ticketFor(unpolled, DEPARTS + HOUR).stubValue).toBe('飛行中');
+  });
+
+  test('goes by the estimated departure of a delayed flight', () => {
+    const delayed = { ...tpeLax, status: 'DELAYED' as const, depEstimatedUtc: DEPARTS + 3 * HOUR };
+
+    expect(statusLabel(delayed, DEPARTS + HOUR)).toBe('延誤');
+    expect(departureCountdown(delayed, DEPARTS + HOUR)).not.toBe('飛行中');
+    expect(statusLabel(delayed, DEPARTS + 4 * HOUR)).toBe('飛行中');
+    expect(departureCountdown(delayed, DEPARTS + 4 * HOUR)).toBe('飛行中');
   });
 });
 

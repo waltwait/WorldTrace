@@ -36,8 +36,8 @@ export function departureCountdown(flight: FlightRecord, now: number): string {
   if (flight.status === 'CANCELLED') return '已取消';
   if (flight.isFinished) return '已完成';
   // The clock says it should have landed, not that it did. See syncFlightStatus.
-  if (now >= flight.arrScheduledUtc) return '待確認';
-  if (now >= flight.depScheduledUtc) return '飛行中';
+  if (now >= arrives(flight)) return '待確認';
+  if (inTheAir(flight, now)) return '飛行中';
   const days = dayNumber(flight.depScheduledUtc, flight.depTz) - dayNumber(now, flight.depTz);
   return days <= 0 ? '今日出發' : `${days} 天`;
 }
@@ -51,25 +51,45 @@ const STATUS_LABELS: Record<FlightStatus, string> = {
   CANCELLED: '已取消',
 };
 
-export function statusLabel(flight: FlightRecord): string {
+/**
+ * In the air by the clock says 飛行中 even before a poll does: the stored status
+ * is only as fresh as the last answer, and most flights are never polled
+ * mid-air.
+ */
+export function statusLabel(flight: FlightRecord, now: number): string {
   if (flight.status === 'CANCELLED') return STATUS_LABELS.CANCELLED;
-  return flight.isFinished ? '已完成' : STATUS_LABELS[flight.status];
+  if (flight.isFinished) return '已完成';
+  if (inTheAir(flight, now)) return STATUS_LABELS.IN_AIR;
+  return STATUS_LABELS[flight.status];
 }
 
 function isOver(flight: FlightRecord): boolean {
   return flight.isFinished || flight.status === 'CANCELLED';
 }
 
+const departs = (f: FlightRecord) => f.depEstimatedUtc ?? f.depScheduledUtc;
+const arrives = (f: FlightRecord) => f.arrEstimatedUtc ?? f.arrScheduledUtc;
+
+/** Left and not yet landed, by the estimated times when there are any. */
+function inTheAir(flight: FlightRecord, now: number): boolean {
+  return !isOver(flight) && now >= departs(flight) && now < arrives(flight);
+}
+
 /**
- * A flight is over once it has left, unless it was cancelled. Worked out on reading
- * and never stored: the polls go on until a day past the arrival, so a cancellation
- * they find afterwards still takes the flight out of the passport.
+ * A flight is over once it has landed, by its estimated arrival if it has one,
+ * unless it was cancelled. It used to be over once it had left, which put a
+ * flight in the air among the past ones — 已完成 on its ticket, skipped as the
+ * next flight, its pull-to-refresh gone — just when its arrival gate and belt
+ * are worth asking for; the user chose to keep it live until it lands.
+ *
+ * Worked out on reading and never stored: the polls go on until a day past
+ * the arrival, so a cancellation they find afterwards still takes the flight
+ * out of the passport.
  */
-export function settleDeparted(flights: readonly FlightRecord[], now: number): FlightRecord[] {
-  return flights.map((flight) => {
-    const left = now >= (flight.depEstimatedUtc ?? flight.depScheduledUtc);
-    return left && !isOver(flight) ? { ...flight, isFinished: true } : flight;
-  });
+export function settleArrived(flights: readonly FlightRecord[], now: number): FlightRecord[] {
+  return flights.map((flight) =>
+    now >= arrives(flight) && !isOver(flight) ? { ...flight, isFinished: true } : flight,
+  );
 }
 
 /** Still to fly, the next one first: that is the one being looked for. */

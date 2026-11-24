@@ -264,14 +264,17 @@ quietly wrong.
   and leaves gate, terminal, seat and cabin empty when nobody gave them; the
   first version of the sheet made all of those up. Ticket times are local to
   their airport (`flights/zonedTime.ts`), never the phone's zone.
-- A flight is over once it has left, by its estimated departure if it has one, unless
-  it was cancelled: the user's decision, in place of a button (`settleDeparted`). It is
-  worked out on reading in `ui/useFlights.ts` and never stored, so `is_finished` means
-  only that the API said Arrived or the trip was typed in already over. Polling goes by
-  that, and stops a day past the scheduled arrival, so a cancellation found after the
-  departure time still takes the flight out of the passport. What this gives up: a
-  flight missed, or cancelled with no poll to say so, gets stamped. Deleting it is the
-  way out. `syncFlightStatus` itself still learns nothing from the clock.
+- A flight is over once it has landed, by its estimated arrival if it has one, unless
+  it was cancelled: the user's decision, in place of a button (`settleArrived`). In the
+  air it stays live: 飛行中 on its ticket and its 狀態 by the clock even before a poll
+  says so, still the next flight, and its page can still be pulled for the arrival gate
+  and belt. (It used to be over once it had left, which hid all of that mid-flight.) It
+  is worked out on reading in `ui/useFlights.ts` and never stored, so `is_finished`
+  means only that the API said Arrived or the trip was typed in already over. Polling
+  goes by that, and stops a day past the scheduled arrival, so a cancellation found
+  after the departure time still takes the flight out of the passport. What this gives
+  up: a flight missed, or cancelled with no poll to say so, gets stamped. Deleting it
+  is the way out. `syncFlightStatus` itself still learns nothing from the clock.
 - A ticket gives three things and no more: flight number, date and time, seat
   (`flights/ticketFacts.ts`). The places printed on it are noted as well, only to pick
   which leg of a number like D7 378 (KUL-TPE-KIX) was flown, and only while the sheet

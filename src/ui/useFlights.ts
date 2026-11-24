@@ -6,7 +6,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { AppState } from 'react-native';
 import { syncReminders } from '../flights/expoReminders';
-import { settleDeparted } from '../flights/flightDisplay';
+import { settleArrived } from '../flights/flightDisplay';
 import { createAeroDataBoxPort } from '../flights/flightStatusApi';
 import type { FlightRecord } from '../flights/types';
 import { apiKey } from '../settings/expoKeyStore';
@@ -64,7 +64,7 @@ export function useFlights(): FlightsState {
     return () => subscription.remove();
   }, []);
 
-  const flights = useMemo(() => settleDeparted(stored, Date.now()), [stored]);
+  const flights = useMemo(() => settleArrived(stored, Date.now()), [stored]);
 
   // Whenever the flights change: a seat filled in, a delay, a flight deleted.
   useEffect(() => {
