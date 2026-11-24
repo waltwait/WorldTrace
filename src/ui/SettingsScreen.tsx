@@ -26,7 +26,13 @@ import { countryName, flagEmoji } from '../flights/countries';
 import { knownCountries } from '../flights/flightStats';
 import type { FlightRecord } from '../flights/types';
 import { discardExport, exportGpx, exportSnapshot, share, type ExportResult } from '../export/backup';
-import { folderLabel, type ExportMode, type ExportSettings, DEFAULT_EXPORT_SETTINGS } from '../export/exportSettings';
+import {
+  DEFAULT_EXPORT_SETTINGS,
+  folderLabel,
+  updateExportSettings,
+  type ExportMode,
+  type ExportSettings,
+} from '../export/exportSettings';
 import { createFolderPort } from '../export/folderPort';
 import { saveToFolder } from '../export/saveToFolder';
 import { loadExportSettings, saveExportSettings } from '../export/settingsFile';
@@ -65,11 +71,15 @@ export const SettingsScreen = memo(function SettingsScreen({
     void loadExportSettings().then(setExportSettings);
   }, []);
 
-  const changeExportSettings = useCallback((next: ExportSettings) => {
-    setExportSettings(next);
-    void saveExportSettings(next).catch(() => {
-      // Not being able to remember a choice must not get in the way of making it.
-    });
+  // Applied to the file as it is now: a share card can have picked a folder
+  // since this page read it (updateExportSettings).
+  const changeExportSettings = useCallback((change: Partial<ExportSettings>) => {
+    setExportSettings((shown) => ({ ...shown, ...change }));
+    void updateExportSettings({ load: loadExportSettings, save: saveExportSettings }, change)
+      .then(setExportSettings)
+      .catch(() => {
+        // Not being able to remember a choice must not get in the way of making it.
+      });
   }, []);
 
   const refresh = useCallback(async () => {
@@ -140,6 +150,8 @@ export const SettingsScreen = memo(function SettingsScreen({
 
     // The copy in the cache is only a stop on the way: whatever happens, it goes.
     try {
+      // The folder on file now, which a share card may have changed since.
+      const { folderUri } = await loadExportSettings();
       const saved = await saveToFolder(
         createFolderPort(() =>
           ask({
@@ -149,14 +161,14 @@ export const SettingsScreen = memo(function SettingsScreen({
             cancelLabel: '取消',
           }),
         ),
-        exportSettings.folderUri,
+        folderUri,
         result,
       );
 
       if (!saved.saved) return null;
 
-      if (saved.folderUri !== exportSettings.folderUri) {
-        changeExportSettings({ ...exportSettings, folderUri: saved.folderUri });
+      if (saved.folderUri !== folderUri) {
+        changeExportSettings({ folderUri: saved.folderUri });
       }
 
       return `已存到 ${folderLabel(saved.folderUri)} · ${formatBytes(result.bytes)}`;
@@ -224,7 +236,7 @@ export const SettingsScreen = memo(function SettingsScreen({
         <View style={styles.line} />
         <ModeSwitch
           mode={exportSettings.mode}
-          onChange={(mode) => changeExportSettings({ ...exportSettings, mode })}
+          onChange={(mode) => changeExportSettings({ mode })}
         />
       </View>
 

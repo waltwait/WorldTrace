@@ -5,6 +5,8 @@ import {
   folderLabel,
   parseExportSettings,
   serializeExportSettings,
+  updateExportSettings,
+  type ExportSettings,
 } from './exportSettings';
 
 describe('parseExportSettings', () => {
@@ -89,5 +91,34 @@ describe('DOWNLOADS_FOLDER_HINT', () => {
   test('points at Downloads on the internal storage', () => {
     expect(decodeURIComponent(DOWNLOADS_FOLDER_HINT)).toContain('primary:Download');
     expect(DOWNLOADS_FOLDER_HINT.startsWith('content://')).toBe(true);
+  });
+});
+
+describe('updateExportSettings', () => {
+  function storeHolding(initial: ExportSettings) {
+    let onFile = initial;
+    return {
+      load: async () => onFile,
+      save: async (next: ExportSettings) => {
+        onFile = next;
+      },
+      get onFile() {
+        return onFile;
+      },
+    };
+  }
+
+  // The settings page read the file once. A folder chosen while saving a
+  // share card after that was put back to the old one by the page's next
+  // change of mode.
+  test('changes only what it was asked to, keeping what was saved elsewhere since', async () => {
+    const store = storeHolding({ mode: 'share', folderUri: null });
+    // A share card saved meanwhile, and picked a folder.
+    await store.save({ mode: 'share', folderUri: 'content://picked' });
+
+    const next = await updateExportSettings(store, { mode: 'save' });
+
+    expect(next).toEqual({ mode: 'save', folderUri: 'content://picked' });
+    expect(store.onFile).toEqual(next);
   });
 });

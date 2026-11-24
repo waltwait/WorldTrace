@@ -83,3 +83,23 @@ export function folderLabel(uri: string): string {
 
   return id.replace(':', '/');
 }
+
+export interface ExportSettingsStore {
+  load(): Promise<ExportSettings>;
+  save(settings: ExportSettings): Promise<void>;
+}
+
+/**
+ * Change part of the settings as they are on file now, not as a screen last
+ * read them. The settings page read the file once, and a share card saved
+ * later can pick a folder: the page's next change of mode wrote its old copy
+ * back over that folder.
+ */
+export async function updateExportSettings(
+  store: ExportSettingsStore,
+  change: Partial<ExportSettings>,
+): Promise<ExportSettings> {
+  const next = { ...(await store.load()), ...change };
+  await store.save(next);
+  return next;
+}
