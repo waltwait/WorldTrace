@@ -16,6 +16,7 @@
 
 import { utcToLocal } from '../flights/zonedTime';
 import type { SqlDriver, SqlValue } from './driver';
+import { FIRST_VERSION_AIRPORTS } from './firstVersionAirports';
 
 const MAIN_TABLE = (name: string) => `CREATE TABLE IF NOT EXISTS ${name} (
      id            TEXT PRIMARY KEY,
@@ -130,6 +131,18 @@ function insert(driver: SqlDriver, table: string, row: Record<string, SqlValue>)
   );
 }
 
+/** City, country and position of an end, as the first version knew them. */
+function place(iata: string, end: 'dep' | 'arr'): Record<string, SqlValue> {
+  const known = FIRST_VERSION_AIRPORTS[iata.trim().toUpperCase()];
+  const [city, country, lat, lon] = known ?? [null, null, null, null];
+  return {
+    [`${end}_city`]: city,
+    [`${end}_country`]: country,
+    [`${end}_lat`]: lat,
+    [`${end}_lon`]: lon,
+  };
+}
+
 async function moveRow(driver: SqlDriver, old: OldFlight): Promise<void> {
   const departure = utcToLocal(old.dep_scheduled_utc, old.dep_tz);
 
@@ -157,6 +170,10 @@ async function moveRow(driver: SqlDriver, old: OldFlight): Promise<void> {
     arr_tz: old.arr_tz,
     dep_terminal: old.dep_terminal,
     arr_terminal: old.arr_terminal,
+    // The first version took these from its own table of airports, now gone,
+    // and never looked these flights up: nothing can fill them in later.
+    ...place(old.dep_iata, 'dep'),
+    ...place(old.arr_iata, 'arr'),
     distance_km: old.distance_miles * KM_PER_MILE,
     duration_minutes: old.duration_minutes,
   });

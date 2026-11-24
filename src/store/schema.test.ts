@@ -213,6 +213,36 @@ describe('moving flights to the three tables', () => {
     expect((await getFlightById(driver, 'f'))?.distanceKm).toBeCloseTo(1609.344);
   });
 
+  // The table of airports these came from is gone, and these flights were never
+  // looked up: nothing can fill this in later. Without it the passport loses
+  // their stamps and the map their arcs.
+  test('keeps the country, city and position of each end', async () => {
+    await migrate(driver);
+
+    const flight = await getFlightById(driver, 'f');
+    expect([flight?.depCountry, flight?.arrCountry]).toEqual(['TW', 'JP']);
+    expect([flight?.depCity, flight?.arrCity]).toEqual(['Taipei', 'Tokyo']);
+    expect(flight?.depLat).toBeCloseTo(25.0797, 3);
+    expect(flight?.depLon).toBeCloseTo(121.2342, 3);
+    expect(flight?.arrLat).toBeCloseTo(35.772, 2);
+    expect(flight?.arrLon).toBeCloseTo(140.393, 2);
+  });
+
+  test('leaves an airport the first version did not know as unknown', async () => {
+    await driver.run(
+      `INSERT INTO flights (id, flight_number, airline_code, airline_name, dep_iata, arr_iata,
+         dep_scheduled_utc, arr_scheduled_utc, dep_tz, arr_tz, status, distance_miles,
+         duration_minutes, created_at)
+       VALUES ('g', 'XX1', 'XX', 'XX', 'TPE', 'ZZZ', 1, 2, 'Asia/Taipei', 'Etc/GMT-9',
+         'SCHEDULED', 0, 60, 8)`,
+    );
+    await migrate(driver);
+
+    const flight = await getFlightById(driver, 'g');
+    expect([flight?.depCountry, flight?.arrCountry]).toEqual(['TW', null]);
+    expect([flight?.arrCity, flight?.arrLat, flight?.arrLon]).toEqual([null, null, null]);
+  });
+
   test('says nobody looked it up', async () => {
     await migrate(driver);
 
