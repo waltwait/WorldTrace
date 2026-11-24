@@ -130,6 +130,28 @@ describe('movedToDate', () => {
   test('says it was borrowed', () => {
     expect(moved.borrowed).toBe(true);
   });
+
+  // A timetable is in each airport's local time. Adding whole days of 24 hours
+  // moved the clock with a daylight-saving change, and the date with it.
+  test('keeps each end\'s local time across a daylight-saving change', () => {
+    const summer: LookedUpFlight = {
+      ...leg,
+      depIata: 'LHR',
+      depTz: 'Europe/London',
+      depScheduledUtc: Date.UTC(2026, 6, 14, 23, 30), // 00:30 BST on 15 July
+      arrScheduledUtc: Date.UTC(2026, 6, 15, 12, 30), // 20:30 in Taipei
+    };
+    const winter = movedToDate(summer, '2026-01-15');
+
+    expect(utcToLocal(winter.depScheduledUtc, winter.depTz)).toEqual({
+      date: '2026-01-15',
+      time: '00:30',
+    });
+    expect(utcToLocal(winter.arrScheduledUtc, winter.arrTz)).toEqual({
+      date: '2026-01-15',
+      time: '20:30',
+    });
+  });
 });
 
 describe('lookUpFlight', () => {

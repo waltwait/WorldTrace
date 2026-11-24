@@ -14,7 +14,7 @@
 import type { FlightLookupPort } from './flightStatusApi';
 import type { LookedUpFlight } from './types';
 import { dateExists } from './ticketYear';
-import { utcToLocal } from './zonedTime';
+import { localToUtc, utcToLocal } from './zonedTime';
 
 const DAY_MS = 24 * 3600 * 1000;
 /** The API allows 365. One spare, since its day and ours may not be the same day. */
@@ -108,15 +108,28 @@ export function bestFlownDate(flown: readonly string[], date: string, now: numbe
   return best === undefined ? null : textOf(best);
 }
 
+/**
+ * `utcMs` on the clocks of `timeZone`, moved `days` calendar days. A timetable
+ * is in local time, so the time of day stays and the instant follows: adding
+ * days of 24 hours instead moved the clock by an hour across a daylight-saving
+ * change, and an 00:30 departure onto the day before.
+ */
+function sameClockDaysLater(utcMs: number, timeZone: string, days: number): number {
+  const { date, time } = utcToLocal(utcMs, timeZone);
+  const moved = new Date(dayOf(date) + days * DAY_MS).toISOString().slice(0, 10);
+  // Null only for a time the clocks skip that day; then the plain shift will do.
+  return localToUtc(moved, time, timeZone) ?? utcMs + days * DAY_MS;
+}
+
 /** That flight as it would have been on `date`, without what belongs to its own day. */
 export function movedToDate(leg: LookedUpFlight, date: string): LookedUpFlight {
   const from = utcToLocal(leg.depScheduledUtc, leg.depTz).date;
-  const shift = dayOf(date) - dayOf(from);
+  const days = Math.round((dayOf(date) - dayOf(from)) / DAY_MS);
 
   return {
     ...leg,
-    depScheduledUtc: leg.depScheduledUtc + shift,
-    arrScheduledUtc: leg.arrScheduledUtc + shift,
+    depScheduledUtc: sameClockDaysLater(leg.depScheduledUtc, leg.depTz, days),
+    arrScheduledUtc: sameClockDaysLater(leg.arrScheduledUtc, leg.arrTz, days),
     depTerminal: null,
     arrTerminal: null,
     depGate: null,
