@@ -318,6 +318,13 @@ quietly wrong.
   them: no arc, no distance, no stamp. Cities read in English, as the API gives
   them, like 「Taipei (TPE)」. Country names are in `flights/countries.ts`, made by
   `tools/make-countries.mjs`.
+- Writes that must land together go through `driver.transaction(tx => …)`, and every
+  statement inside goes through `tx`. Never a bare `BEGIN` on a shared connection:
+  callers interleave at every await, so another caller's writes would be swept into
+  the transaction and rolled back with it. On the phone a transaction gets a
+  connection of its own, with `foreign_keys` and the busy timeout set before
+  `BEGIN IMMEDIATE` (`store/expoDriver.ts`); the work must not wait on a write of the
+  main connection, which waits for its lock.
 - The flight tables migrate on the screens' connection only (`migrate`); the
   background task runs `migrateTrack`. Two connections changing them at once
   could fail, and on that one it would stop recording without a word.
