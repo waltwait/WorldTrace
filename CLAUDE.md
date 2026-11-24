@@ -400,7 +400,9 @@ quietly wrong.
   native driver, since a font size cannot be animated there. The pager takes the
   height of the page showing. The year is chosen from a list rising from the bottom
   (`ui/YearPicker.tsx`, `yearChoices`), opened by the button in the header: ALL, then
-  each year a trip began in, the newest first, with the flights it holds.
+  each year a trip began in, the newest first, with the flights it holds. ALL is
+  English on purpose, on the button, in the list and on the shared picture: the
+  user's call, an exception to UI text being Chinese.
 - A trip's links are kept on a flight (`flight_links`), the trip's first when added,
   because nothing stores a trip: a flight added later can join or split trips, and the
   links follow their flights. Deleting a flight hands them to the first flight of its
