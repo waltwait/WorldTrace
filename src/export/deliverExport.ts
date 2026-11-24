@@ -47,3 +47,19 @@ export async function deliverImage(
     port.discard(uri);
   }
 }
+
+const SHARE_CARD = /^worldtrace-(trip|passport)-.+\.png$/;
+
+/**
+ * The share cards in the cache to delete before `sharing` is written: every
+ * earlier one, and nothing else there — a restore keeps its rescue copy of the
+ * database in the cache too.
+ *
+ * A card cannot be deleted once the share sheet returns. On Android that is
+ * when the chooser closes, not when the app it went to has read the file, and
+ * LINE or Instagram then opened a file that was already gone. So each card
+ * stays until the next one is shared, and the cache holds one at a time.
+ */
+export function staleShareCopies(cacheNames: readonly string[], sharing: string): string[] {
+  return cacheNames.filter((name) => SHARE_CARD.test(name) && name !== sharing);
+}

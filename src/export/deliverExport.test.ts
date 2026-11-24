@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { deliverImage, type ImageDeliveryPort } from './deliverExport';
+import { deliverImage, staleShareCopies, type ImageDeliveryPort } from './deliverExport';
 import type { ExportSettings } from './exportSettings';
 
 const DOWNLOADS = 'content://com.android.externalstorage.documents/tree/primary%3ADownload%2FWorldTrace';
@@ -109,5 +109,28 @@ describe('deliverImage', () => {
       'share failed',
     );
     expect(events).toEqual(['capture', 'discard:file:///cache/view-shot-123.png']);
+  });
+});
+
+describe('staleShareCopies', () => {
+  // A shared card cannot be deleted when the share sheet returns: on Android
+  // that is when the chooser closes, before the app it went to has read it.
+  // So earlier cards go when the next one is shared, and nothing else does.
+  test('names the earlier share cards in the cache, and nothing else there', () => {
+    const cache = [
+      'worldtrace-trip-2026-07-01-9x16.png',
+      'worldtrace-passport-all-1x1.png',
+      'worldtrace-passport-2026-9x16.png',
+      'worldtrace-before-restore-20261101.db',
+      'worldtrace-20261101.gpx',
+      'worldtrace-restore.db',
+      'ImagePicker',
+      'view-shot-123.png',
+    ];
+
+    expect(staleShareCopies(cache, 'worldtrace-passport-2026-9x16.png')).toEqual([
+      'worldtrace-trip-2026-07-01-9x16.png',
+      'worldtrace-passport-all-1x1.png',
+    ]);
   });
 });
